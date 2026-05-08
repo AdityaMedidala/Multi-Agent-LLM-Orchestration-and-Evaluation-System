@@ -179,3 +179,35 @@ Adversarial no_kw_penalty=2.0 with hard 0.0 on hit.
 **What was changed:** Nothing structural.
 **What was caught:** test_cases.py already existed from Opus output —
 Claude Code read it instead of overwriting. Clean detection.
+
+### Block 13 — Meta-agent
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What was asked:** run_meta_agent() that finds worst agent+dimension,
+retrieves current prompt constant, proposes rewrite with structured
+diff via Haiku.
+**What was kept:** Worst-score sentinel=2.0 (not 1.0) to avoid false
+first-iteration replacement. Import aliases for _SYSTEM name collision
+between synthesis and critique.
+**What was changed:** Nothing structural.
+**What was caught:** _ROUTING_SYSTEM already existed in orchestrator.py
+as a named constant — no changes needed there.
+
+### Block 14 — Wire meta-agent + rerun_eval
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What was asked:** Implement rerun_eval Celery task with real DB
+logic, wire meta-agent into approval endpoint as fire-and-forget.
+**What was kept:** Defensive JSON parsing on psycopg2 (str vs dict),
+failed_ids or None fallback to full re-run, closure capture of
+_eval_summary as local variable to avoid DetachedInstanceError.
+**What was changed:** Nothing structural.
+**What was caught:** run_meta_agent deferred import inside coroutine
+to avoid ANTHROPIC_API_KEY requirement at import time during tests.
+
+### Block 15 — HTML demo client
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What was asked:** Single-file terminal-style SSE client, no npm.
+Named SSE listeners per event type, auto-scroll, clear button.
+**What was kept:** Named addEventListener per event type (not onmessage),
+onerror CLOSED state guard, esc() XSS helper, Ctrl+Enter shortcut.
+**What was changed:** Nothing.
+**What was caught:** Nothing — clean first run.
