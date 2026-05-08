@@ -201,3 +201,9 @@ AI assistants were used throughout. See `AI_USAGE.md` for a full per-block attes
    15 of the eval test cases cover topics outside this corpus — RAG correctly
    reports "no context" rather than hallucinating, which scores zero on
    answer_correctness. A production corpus would cover the test domains.
+
+8. **Eval scores reflect corpus size, not pipeline correctness.** The demo
+   corpus has 7 chunks covering algorithms, networking, and biology basics.
+   15 of the eval test cases cover topics outside this corpus — RAG correctly
+   reports "no context" rather than hallucinating, which scores zero on
+   answer_correctness. A production corpus would cover the test domains.
