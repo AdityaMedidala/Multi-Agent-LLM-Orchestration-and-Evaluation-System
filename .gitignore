@@ -7,3 +7,5 @@ dist/
 logs/
 *.jsonl
 .DS_Store
+scratch/
+.idea/
