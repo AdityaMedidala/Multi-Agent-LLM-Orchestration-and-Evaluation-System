@@ -13,8 +13,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.agents.base import AgentResult, BaseAgent
 from app.config import settings
-from app.schemas.context import ProvenanceEntry, SharedContext
-
+from app.schemas.context import ProvenanceEntry, SharedContext, ToolCallRecord
 log = logging.getLogger(__name__)
 
 # ── Retrieval constants (kept identical to scratch/final_retreval.py) ─────────
@@ -167,6 +166,37 @@ class RAGAgent(BaseAgent):
 
         return await self._rerank(query, fused)
 
+    # ── Web search fallback ───────────────────────────────────────────────────
+
+    async def _web_search_fallback(
+        self, query: str, ctx: SharedContext
+    ) -> list[tuple[float, dict]]:
+        from app.tools.web_search import web_search as _web_search  # deferred to avoid circular import
+        start = time.monotonic()
+        tool_result = await _web_search(query, max_results=5)
+        latency = int((time.monotonic() - start) * 1000)
+        ctx.tool_call_log.append(ToolCallRecord(
+            tool_name="web_search",
+            attempt=1,
+            input={"query": query},
+            output=tool_result.output if tool_result.success else {},
+            latency_ms=latency,
+            accepted=tool_result.success,
+            failure_reason=tool_result.failure_reason,
+        ))
+        if not tool_result.success:
+            return []
+        results = tool_result.output.get("results", [])
+        fused = []
+        for i, r in enumerate(results):
+            score = max(1.0 - (i * 0.1), 0.1)
+            fused.append((score, {
+                "chunk_id": f"web_{i}",
+                "text": f"{r.get('title', '')}. {r.get('snippet', '')}",
+                "metadata": {"source": r.get("url", "web"), "type": "web"},
+            }))
+        return fused
+
     # ── Agent entry point ─────────────────────────────────────────────────────
 
     async def run(self, ctx: SharedContext) -> AgentResult:
@@ -188,6 +218,14 @@ class RAGAgent(BaseAgent):
 
             # ── 3. Hop 1 — retrieve & rerank ─────────────────────────────────
             hop1 = await self._retrieve_and_rerank(query)
+
+            # ── Web search fallback if corpus has no relevant results ─────────
+            top_score = hop1[0][0] if hop1 else 0.0
+            if not hop1 or top_score < 0.15:
+                web_results = await self._web_search_fallback(query, ctx)
+                if web_results:
+                    hop1 = web_results + hop1
+                    hop1.sort(key=lambda x: x[0], reverse=True)
 
             # ── 4. Hop 2 — follow-up query then retrieve again ────────────────
             top3_texts = "\n---\n".join(

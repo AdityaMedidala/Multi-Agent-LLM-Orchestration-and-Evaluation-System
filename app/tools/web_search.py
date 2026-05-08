@@ -8,8 +8,6 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.tools.registry import ToolResult
-
 _DDG_URL = "https://api.duckduckgo.com/"
 
 
@@ -27,6 +25,7 @@ async def _fetch(client: httpx.AsyncClient, query: str) -> httpx.Response:
 
 
 async def web_search(query: str, max_results: int = 5) -> ToolResult:
+    from app.tools.registry import ToolResult  # deferred to break circular import with registry.py
     async with httpx.AsyncClient(timeout=8.0) as client:
         try:
             response = await _fetch(client, query)
