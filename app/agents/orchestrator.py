@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import functools
+import hashlib
 import json
+import logging
 import time
+import uuid
 
+import psycopg2
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.agents.base import AgentResult, BaseAgent
@@ -10,7 +16,10 @@ from app.agents.critique import CritiqueAgent
 from app.agents.decomposition import DecompositionAgent
 from app.agents.rag import RAGAgent
 from app.agents.synthesis import SynthesisAgent
-from app.schemas.context import SharedContext
+from app.config import settings
+from app.schemas.context import AgentBudget, SharedContext
+
+log = logging.getLogger(__name__)
 
 AGENT_REGISTRY: dict[str, BaseAgent] = {
     "decomposition": DecompositionAgent(),
@@ -46,6 +55,86 @@ Produce the routing plan JSON now.
 """
 
 
+# ── Agent-log persistence (sync DB write, run via executor) ──────────────────
+
+def _write_agent_log_sync(
+    job_id: str,
+    agent_id: str,
+    event_type: str,
+    input_payload: dict,
+    output_payload: dict,
+    latency_ms: int,
+    token_count: int,
+    policy_violation: bool = False,
+) -> None:
+    """Write one AgentLog row synchronously (called via run_in_executor)."""
+    def _hash(d: dict) -> str:
+        return hashlib.sha256(
+            json.dumps(d, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+
+    # Normalise job_id: the column is UUID — convert non-UUID strings
+    # (e.g. "log-test-1") to a deterministic UUID so the INSERT never
+    # fails on a cast error.  In production job_id is always a real UUID.
+    try:
+        job_uuid_str = str(uuid.UUID(job_id))
+    except ValueError:
+        job_uuid_str = str(uuid.uuid5(uuid.NAMESPACE_DNS, job_id))
+
+    try:
+        conn = psycopg2.connect(settings.database_url_sync)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO agent_logs
+              (id, job_id, agent_id, event_type,
+               input_hash, output_hash, latency_ms,
+               token_count, payload, policy_violation)
+            VALUES (%s,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                str(uuid.uuid4()), job_uuid_str, agent_id, event_type,
+                _hash(input_payload), _hash(output_payload),
+                latency_ms, token_count,
+                json.dumps(
+                    {"input": input_payload, "output": output_payload},
+                    default=str,
+                ),
+                policy_violation,
+            ),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as exc:  # noqa: BLE001
+        # Non-fatal — logging failure must never abort the pipeline
+        log.warning("agent_log write failed: %s", exc)
+
+
+async def _log_agent_event(
+    job_id: str,
+    agent_id: str,
+    event_type: str,
+    input_payload: dict,
+    output_payload: dict,
+    latency_ms: int,
+    token_count: int,
+    policy_violation: bool = False,
+) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        functools.partial(
+            _write_agent_log_sync,
+            job_id, agent_id, event_type,
+            input_payload, output_payload,
+            latency_ms, token_count, policy_violation,
+        ),
+    )
+
+
+# ── Orchestrator ──────────────────────────────────────────────────────────────
+
 class OrchestratorAgent(BaseAgent):
     agent_id = "orchestrator"
 
@@ -62,6 +151,17 @@ class OrchestratorAgent(BaseAgent):
         ]
         routing_plan, overall_reasoning = await self._get_routing_plan(messages)
         ctx.log_routing(f"orchestrator_reasoning: {overall_reasoning}")
+
+        # Log the orchestrator's own routing decision
+        await _log_agent_event(
+            job_id=ctx.job_id,
+            agent_id="orchestrator",
+            event_type="routing",
+            input_payload={"query": ctx.original_query},
+            output_payload={"plan": routing_plan, "reasoning": overall_reasoning},
+            latency_ms=0,
+            token_count=0,
+        )
 
         # ── 2. Execute agents in the decided order ────────────────────────────
         results: list[AgentResult] = []
@@ -81,12 +181,35 @@ class OrchestratorAgent(BaseAgent):
             # Initialise budget before the agent runs
             ctx.get_budget(agent_name, budget)
 
+            # Log agent start
+            await _log_agent_event(
+                job_id=ctx.job_id,
+                agent_id=agent_name,
+                event_type="start",
+                input_payload={"query": ctx.original_query, "routing_reason": reason},
+                output_payload={},
+                latency_ms=0,
+                token_count=0,
+            )
+
             try:
                 result = await agent.run(ctx)
             except Exception as exc:  # noqa: BLE001
                 error_msg = f"{type(exc).__name__}: {exc}"
                 ctx.metadata[f"{agent_name}_error"] = error_msg
                 ctx.log_routing(f"FAILED '{agent_name}': {error_msg}")
+
+                # Log agent exception
+                await _log_agent_event(
+                    job_id=ctx.job_id,
+                    agent_id=agent_name,
+                    event_type="error",
+                    input_payload={"query": ctx.original_query},
+                    output_payload={"error": str(exc)},
+                    latency_ms=0,
+                    token_count=0,
+                )
+
                 results.append(
                     AgentResult(
                         agent_id=agent_name,
@@ -101,6 +224,22 @@ class OrchestratorAgent(BaseAgent):
 
             if not result.success:
                 ctx.log_routing(f"FAILED '{agent_name}': {result.error}")
+
+            # Log agent output (success or soft failure)
+            await _log_agent_event(
+                job_id=ctx.job_id,
+                agent_id=agent_name,
+                event_type="output",
+                input_payload={"query": ctx.original_query},
+                output_payload=result.output,
+                latency_ms=result.latency_ms,
+                token_count=result.tokens_used,
+                policy_violation=ctx.budgets.get(
+                    agent_name,
+                    AgentBudget(agent_id=agent_name, max_tokens=0),
+                ).violated,
+            )
+
             results.append(result)
 
         latency_ms = int((time.monotonic() - start) * 1000)
