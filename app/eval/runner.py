@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from app.config import settings
 from app.eval.test_cases import TEST_CASES
 from app.schemas.context import SharedContext
 
@@ -173,7 +174,28 @@ async def run_eval(case_ids: list[str] | None = None) -> dict:
     results: list[EvalCaseResult] = []
 
     for case in cases_to_run:
-        job_id = f"eval_{case['id']}_{int(time.time())}"
+        import uuid as _uuid
+        import psycopg2 as _psycopg2
+        _raw_id = f"eval_{case['id']}_{int(time.time())}"
+        try:
+            job_id = str(_uuid.UUID(_raw_id))
+        except ValueError:
+            job_id = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, _raw_id))
+
+        # Insert job row so agent_logs FK constraint is satisfied
+        try:
+            _conn = _psycopg2.connect(settings.database_url_sync)
+            _cur = _conn.cursor()
+            _cur.execute(
+                "INSERT INTO jobs (id, query, status) VALUES (%s::uuid, %s, %s) ON CONFLICT DO NOTHING",
+                (job_id, case["query"], "running")
+            )
+            _conn.commit()
+            _cur.close()
+            _conn.close()
+        except Exception:
+            pass
+
         ctx = SharedContext(job_id=job_id, original_query=case["query"])
 
         try:
