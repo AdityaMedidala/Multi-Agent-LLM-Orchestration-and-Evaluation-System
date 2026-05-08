@@ -80,7 +80,74 @@ def run_pipeline(self, job_id: str, query: str) -> dict:  # noqa: ANN001
     return {"job_id": job_id, "status": "done"}
 
 
-@celery_app.task(name="rerun_eval")
-def rerun_eval(prompt_rewrite_id: str) -> dict:
-    log.info("rerun_eval called for %s", prompt_rewrite_id)
-    return {"status": "stub", "prompt_rewrite_id": prompt_rewrite_id}
+@celery_app.task(bind=True, name="rerun_eval")
+def rerun_eval(self, prompt_rewrite_id: str) -> dict:  # noqa: ANN001
+    import asyncio
+    import json
+    import uuid
+
+    import psycopg2
+
+    from app.config import settings
+    from app.eval.runner import run_eval
+
+    conn = psycopg2.connect(settings.database_url_sync)
+    try:
+        cur = conn.cursor()
+        # Verify the prompt rewrite record exists
+        cur.execute(
+            "SELECT agent_id, dimension FROM prompt_rewrites WHERE id = %s",
+            (prompt_rewrite_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"error": "prompt_rewrite_not_found"}
+
+        # Pull failed case IDs from the latest eval run
+        cur.execute(
+            "SELECT summary FROM eval_runs ORDER BY triggered_at DESC LIMIT 1"
+        )
+        eval_row = cur.fetchone()
+        if not eval_row:
+            return {"error": "no_eval_run_found"}
+
+        summary = eval_row[0]
+        # psycopg2 may return JSON columns as str on some driver versions
+        if isinstance(summary, str):
+            summary = json.loads(summary)
+
+        failed_ids = [
+            c["id"]
+            for cat in summary.get("by_category", {}).values()
+            for c in cat.get("cases", [])
+            if not c.get("passed", True)
+        ]
+        cur.close()
+    finally:
+        conn.close()
+
+    # Re-run eval on failed cases only (or all if none were tracked as failed)
+    new_summary = asyncio.run(run_eval(failed_ids or None))
+
+    # Persist the rerun record
+    rerun_id = str(uuid.uuid4())
+    conn = psycopg2.connect(settings.database_url_sync)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO eval_reruns
+               (id, prompt_rewrite_id, failed_case_ids, delta_scores)
+               VALUES (%s, %s, %s, %s)""",
+            (
+                rerun_id,
+                prompt_rewrite_id,
+                json.dumps(failed_ids),
+                json.dumps(new_summary, default=str),
+            ),
+        )
+        conn.commit()
+        cur.close()
+    finally:
+        conn.close()
+
+    return {"rerun_id": rerun_id, "cases_rerun": len(failed_ids)}

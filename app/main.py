@@ -295,4 +295,43 @@ async def review_prompt(
 
     await db.commit()
     await db.refresh(rewrite)
+
+    if body.decision == "approved":
+        # Fetch latest eval summary to feed the meta-agent
+        eval_run = (
+            await db.execute(
+                select(EvalRun).order_by(EvalRun.triggered_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if eval_run is not None:
+            _eval_run_id  = str(eval_run.id)
+            _eval_summary = eval_run.summary  # dict from JSON column
+
+            # Fire-and-forget: call meta-agent and persist the new rewrite proposal
+            async def _spawn_meta_rewrite() -> None:
+                from app.agents.meta_agent import run_meta_agent
+                try:
+                    rewrite_data = await run_meta_agent(_eval_summary)
+                    async with AsyncSessionLocal() as session:
+                        new_rewrite = PromptRewrite(
+                            id=uuid.uuid4(),
+                            eval_run_id=uuid.UUID(_eval_run_id),
+                            agent_id=rewrite_data["agent_id"],
+                            dimension=rewrite_data["dimension"],
+                            original_prompt=rewrite_data["original_prompt"],
+                            proposed_prompt=rewrite_data["proposed_prompt"],
+                            diff_justification=rewrite_data["diff_justification"],
+                            status="pending",
+                        )
+                        session.add(new_rewrite)
+                        await session.commit()
+                except Exception:
+                    pass  # non-fatal: meta-agent failure should not break the response
+
+            asyncio.create_task(_spawn_meta_rewrite())
+
+        # Enqueue targeted re-eval via Celery
+        rerun_eval.delay(rewrite_id)
+
     return {"rewrite_id": rewrite_id, "status": rewrite.status}
