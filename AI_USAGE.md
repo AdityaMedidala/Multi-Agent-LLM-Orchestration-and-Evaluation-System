@@ -211,3 +211,39 @@ Named SSE listeners per event type, auto-scroll, clear button.
 onerror CLOSED state guard, esc() XSS helper, Ctrl+Enter shortcut.
 **What was changed:** Nothing.
 **What was caught:** Nothing — clean first run.
+
+### Block 15 — HTML demo client
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What was asked:** Single-file terminal-style SSE client, no npm.
+Named SSE listeners per event type, auto-scroll, clear button.
+**What was kept:** Named addEventListener per event type (not onmessage),
+onerror CLOSED state guard, esc() XSS helper, Ctrl+Enter shortcut.
+**What was changed:** Nothing.
+**What was caught:** Nothing — clean first run.
+
+---
+
+### Block 16 — Wire rerun_eval + approval endpoint
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What was asked:** Implement rerun_eval Celery task with real DB
+logic, wire meta-agent into approval endpoint as fire-and-forget.
+**What was kept:** Defensive JSON parsing on psycopg2 (str vs dict),
+failed_ids or None fallback to full re-run, closure capture of
+_eval_summary as local variable to avoid DetachedInstanceError.
+**What was changed:** Nothing structural.
+**What was caught:** run_meta_agent deferred import inside coroutine
+to avoid ANTHROPIC_API_KEY requirement at import time during tests.
+
+---
+
+### Block 17 — README
+**Tool:** Claude Opus 4.6 (claude.ai) — switched for documentation quality
+**What was asked:** Full README with architecture diagram, agent table,
+tool table, eval harness docs, known limitations, what to build next.
+**What was kept:** All sections verbatim. 7 known limitations including
+honest assessment of sandbox security, meta-agent attribution being
+correlational not causal, 15 cases being too few for statistical significance.
+**What was changed:** Nothing.
+**Why Opus:** README is a primary evaluation artifact. A senior engineer
+reads it first. Sonnet produces adequate READMEs; Opus produces ones
+that demonstrate systems thinking in the limitations section.
