@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>mega-ai / pipeline demo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0a0a0a;
+      color: #ccc;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 14px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 20px 60px;
+    }
+
+    /* ── Layout shell ─────────────────────────────────────────────────────── */
+    .shell {
+      width: 100%;
+      max-width: 860px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ── Header ───────────────────────────────────────────────────────────── */
+    header {
+      color: #444;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #1c1c1c;
+    }
+
+    header span { color: #666; }
+
+    /* ── Input area ───────────────────────────────────────────────────────── */
+    .input-area {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    textarea {
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 4px;
+      color: #e0e0e0;
+      font-family: inherit;
+      font-size: 14px;
+      padding: 12px;
+      resize: vertical;
+      min-height: 80px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    textarea:focus { border-color: #333; }
+
+    textarea::placeholder { color: #333; }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    button {
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 4px;
+      color: #bbb;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 8px 18px;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+
+    button:hover:not(:disabled) {
+      background: #1e1e1e;
+      border-color: #3a3a3a;
+      color: #fff;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.4;
+    }
+
+    #btn-run {
+      border-color: #2a4a2a;
+      color: #4ade80;
+    }
+
+    #btn-run:hover:not(:disabled) {
+      background: #0f1f0f;
+      border-color: #3a7a3a;
+    }
+
+    /* ── Terminal ─────────────────────────────────────────────────────────── */
+    .terminal-wrap {
+      position: relative;
+    }
+
+    .terminal-label {
+      color: #333;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+    }
+
+    #terminal {
+      background: #0d0d0d;
+      border: 1px solid #1c1c1c;
+      border-radius: 4px;
+      height: 480px;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    /* Scrollbar */
+    #terminal::-webkit-scrollbar { width: 6px; }
+    #terminal::-webkit-scrollbar-track { background: transparent; }
+    #terminal::-webkit-scrollbar-thumb { background: #222; border-radius: 3px; }
+
+    /* ── Event line base ──────────────────────────────────────────────────── */
+    .event-line {
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* ── Per-type colours ─────────────────────────────────────────────────── */
+    .event-agent_start  { color: #4ade80; }
+    .event-agent_done   { color: #22d3ee; }
+    .event-tool_call    { color: #fbbf24; }
+    .event-budget       { color: #555; }
+    .event-final        {
+      color: white;
+      background: #1a1a1a;
+      padding: 12px;
+      border-left: 3px solid #4ade80;
+      margin: 8px 0;
+    }
+    .event-error        { color: #f87171; }
+    .event-done         { color: #555; text-align: center; }
+
+    /* ── Empty-state placeholder ──────────────────────────────────────────── */
+    .placeholder {
+      color: #222;
+      margin: auto;
+      text-align: center;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    /* ── Footer note ──────────────────────────────────────────────────────── */
+    footer {
+      color: #333;
+      font-size: 11px;
+      text-align: center;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+
+    <header>
+      <span>mega-ai</span> / pipeline demo
+    </header>
+
+    <div class="input-area">
+      <textarea id="query" placeholder="Ask the pipeline anything..."></textarea>
+      <div class="btn-row">
+        <button id="btn-run">▶ Run Pipeline</button>
+        <button id="btn-clear">✕ Clear</button>
+      </div>
+    </div>
+
+    <div class="terminal-wrap">
+      <div class="terminal-label">output</div>
+      <div id="terminal">
+        <div class="placeholder">pipeline output will appear here</div>
+      </div>
+    </div>
+
+    <footer>
+      Requires mega-ai API running at localhost:8000 — see README for setup.
+    </footer>
+
+  </div>
+
+  <script>
+    const API = "http://localhost:8000";
+
+    const terminal  = document.getElementById("terminal");
+    const queryEl   = document.getElementById("query");
+    const btnRun    = document.getElementById("btn-run");
+    const btnClear  = document.getElementById("btn-clear");
+
+    let es = null; // active EventSource
+
+    /* ── Helpers ──────────────────────────────────────────────────────────── */
+
+    function clearTerminal() {
+      terminal.innerHTML = '<div class="placeholder">pipeline output will appear here</div>';
+    }
+
+    function removePlaceholder() {
+      const ph = terminal.querySelector(".placeholder");
+      if (ph) ph.remove();
+    }
+
+    function appendLine(cls, html) {
+      removePlaceholder();
+      const div = document.createElement("div");
+      div.className = "event-line " + cls;
+      div.innerHTML = html;
+      terminal.appendChild(div);
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function esc(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function setRunning(running) {
+      btnRun.disabled = running;
+      queryEl.disabled = running;
+    }
+
+    function closeStream() {
+      if (es) { es.close(); es = null; }
+    }
+
+    /* ── SSE event → rendered line ────────────────────────────────────────── */
+
+    function handleEvent(type, raw) {
+      let d = {};
+      try { d = JSON.parse(raw); } catch (_) { d = { message: raw }; }
+
+      switch (type) {
+        case "agent_start":
+          appendLine("event-agent_start",
+            `&#x25B6; [${esc(d.agent_id)}] starting...`);
+          break;
+
+        case "agent_done":
+          appendLine("event-agent_done",
+            `&#x2713; [${esc(d.agent_id)}] done &mdash; ${d.latency_ms ?? "?"}ms | ${d.token_count ?? "?"}t`);
+          break;
+
+        case "tool_call":
+          appendLine("event-tool_call",
+            `&#x2699; tool: ${esc(d.tool_name)} (attempt ${d.attempt ?? 1})`);
+          break;
+
+        case "budget_update":
+          appendLine("event-budget",
+            `&#x1F4B0; budget: ${esc(d.agent_id)} &mdash; violation flagged`);
+          break;
+
+        case "final_answer":
+          appendLine("event-final",
+            `<strong>FINAL ANSWER</strong>\n\n${esc(d.answer ?? "")}`);
+          break;
+
+        case "error":
+          appendLine("event-error",
+            `&#x2717; error: ${esc(d.message ?? raw)}`);
+          closeStream();
+          setRunning(false);
+          break;
+
+        case "done":
+          appendLine("event-done", "&mdash;&mdash; pipeline complete &mdash;&mdash;");
+          closeStream();
+          setRunning(false);
+          break;
+
+        default:
+          // Surface any other event types verbatim
+          appendLine("event-budget",
+            `[${esc(type)}] ${esc(raw)}`);
+      }
+    }
+
+    /* ── Main flow ────────────────────────────────────────────────────────── */
+
+    async function runPipeline() {
+      const query = queryEl.value.trim();
+      if (!query) { queryEl.focus(); return; }
+
+      closeStream();
+      clearTerminal();
+      setRunning(true);
+
+      // 1 — POST /jobs
+      let jobId;
+      try {
+        const res = await fetch(`${API}/jobs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        jobId = json.job_id;
+      } catch (err) {
+        appendLine("event-error", `&#x2717; failed to create job: ${esc(err.message)}`);
+        setRunning(false);
+        return;
+      }
+
+      appendLine("event-budget",
+        `job created &mdash; id: ${esc(jobId)}`);
+
+      // 2 — Open SSE stream
+      es = new EventSource(`${API}/jobs/${jobId}/stream`);
+
+      // Named event types (server sends event: <type>)
+      const namedEvents = [
+        "agent_start", "agent_done", "tool_call",
+        "budget_update", "final_answer", "error", "done",
+      ];
+
+      namedEvents.forEach(evtType => {
+        es.addEventListener(evtType, e => handleEvent(evtType, e.data));
+      });
+
+      // Fallback for unnamed "message" events
+      es.onmessage = e => handleEvent("message", e.data);
+
+      es.onerror = () => {
+        if (es && es.readyState === EventSource.CLOSED) return; // already handled
+        appendLine("event-error", "&#x2717; stream connection lost");
+        closeStream();
+        setRunning(false);
+      };
+    }
+
+    /* ── Button wiring ────────────────────────────────────────────────────── */
+
+    btnRun.addEventListener("click", runPipeline);
+
+    btnClear.addEventListener("click", () => {
+      closeStream();
+      setRunning(false);
+      clearTerminal();
+    });
+
+    // Allow Ctrl+Enter / Cmd+Enter to submit
+    queryEl.addEventListener("keydown", e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") runPipeline();
+    });
+  </script>
+</body>
+</html>
