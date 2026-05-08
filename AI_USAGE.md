@@ -332,3 +332,14 @@ RAG appropriately refuses out-of-corpus queries.
 **Human review:** Scores reflect corpus size limitation, not eval
 harness bug. Architecture validated. Results stored in eval_runs table
 with full ctx_snapshot for reproducibility.
+
+### Block 24 — AgentLog observability
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What was asked:** Write agent_logs rows from orchestrator for every
+agent event (routing, start, output, error) using psycopg2 in executor.
+**What was kept:** Non-fatal exception handling so log failure never
+aborts pipeline. uuid5 normalization for non-UUID test job_ids.
+AgentBudget default for agents with no budget set.
+**What was changed:** Nothing structural.
+**What was caught:** FK constraint on job_id — test needed a real
+jobs row. Fixed by seeding a job before the test.****
