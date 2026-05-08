@@ -9,7 +9,7 @@ import time
 import cohere
 import openai
 import psycopg2
-from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.agents.base import AgentResult, BaseAgent
 from app.config import settings
@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 RRF_K        = 60
 RERANK_TOP_N = 10
 RERANK_MODEL = "rerank-v3.5"
-EMBED_MODEL  = "text-embedding-3-large"
+EMBED_MODEL  = "text-embedding-3-small"
 SEARCH_LIMIT = 20
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ class RAGAgent(BaseAgent):
         except Exception:
             self._cohere = None  # type: ignore[assignment]
 
-        self._llm = ChatAnthropic(model="claude-haiku-4-5", temperature=0)
+        self._llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
 
     # ── Embedding (async) ─────────────────────────────────────────────────────
 

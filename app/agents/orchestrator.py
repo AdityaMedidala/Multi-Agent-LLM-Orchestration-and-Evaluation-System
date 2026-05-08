@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 
-from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.agents.base import AgentResult, BaseAgent
 from app.agents.critique import CritiqueAgent
@@ -50,7 +50,7 @@ class OrchestratorAgent(BaseAgent):
     agent_id = "orchestrator"
 
     def __init__(self) -> None:
-        self._llm = ChatAnthropic(model="claude-haiku-4-5", temperature=0)
+        self._llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
 
     async def run(self, ctx: SharedContext) -> AgentResult:
         start = time.monotonic()
@@ -68,7 +68,7 @@ class OrchestratorAgent(BaseAgent):
         for step in routing_plan:
             agent_name: str = step["agent"]
             reason: str = step.get("reason", "")
-            budget_tokens: int = step.get("budget_tokens", 4000)
+            budget = max(step.get("budget_tokens", 4000), 4000)
 
             ctx.log_routing(f"invoking '{agent_name}': {reason}")
 
@@ -79,7 +79,7 @@ class OrchestratorAgent(BaseAgent):
                 continue
 
             # Initialise budget before the agent runs
-            ctx.get_budget(agent_name, budget_tokens)
+            ctx.get_budget(agent_name, budget)
 
             try:
                 result = await agent.run(ctx)
@@ -138,9 +138,9 @@ class OrchestratorAgent(BaseAgent):
         except Exception as exc:  # noqa: BLE001
             # Safe fallback: run all agents in default order
             fallback_plan = [
-                {"agent": "decomposition", "reason": "fallback", "budget_tokens": 4000},
+                {"agent": "decomposition", "reason": "fallback", "budget_tokens": 6000},
                 {"agent": "rag",           "reason": "fallback", "budget_tokens": 6000},
-                {"agent": "critique",      "reason": "fallback", "budget_tokens": 3000},
-                {"agent": "synthesis",     "reason": "fallback", "budget_tokens": 4000},
+                {"agent": "critique",      "reason": "fallback", "budget_tokens": 6000},
+                {"agent": "synthesis",     "reason": "fallback", "budget_tokens": 6000},
             ]
             return fallback_plan, f"LLM routing failed ({exc}); using default order"
