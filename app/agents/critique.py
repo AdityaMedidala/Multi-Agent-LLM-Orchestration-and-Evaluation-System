@@ -4,7 +4,7 @@ import json
 import logging
 import time
 
-from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.agents.base import AgentResult, BaseAgent
 from app.schemas.context import CritiqueClaim, SharedContext
@@ -41,7 +41,7 @@ class CritiqueAgent(BaseAgent):
     agent_id = "critique"
 
     def __init__(self) -> None:
-        self._llm = ChatAnthropic(model="claude-haiku-4-5", temperature=0)
+        self._llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
 
     async def run(self, ctx: SharedContext) -> AgentResult:
         start = time.monotonic()

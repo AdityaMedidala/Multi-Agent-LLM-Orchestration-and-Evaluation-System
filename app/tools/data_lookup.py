@@ -5,7 +5,7 @@ import functools
 
 import psycopg2
 import psycopg2.extras
-from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.config import settings
 from app.tools.registry import ToolResult
@@ -32,7 +32,7 @@ def _run_query(sql: str) -> list[dict]:
 
 
 async def data_lookup(natural_language_query: str) -> ToolResult:
-    llm = ChatAnthropic(model="claude-haiku-4-5", temperature=0)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
 
     # ── 1. NL → SQL via LLM ──────────────────────────────────────────────────
     try:

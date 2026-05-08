@@ -242,8 +242,75 @@ to avoid ANTHROPIC_API_KEY requirement at import time during tests.
 tool table, eval harness docs, known limitations, what to build next.
 **What was kept:** All sections verbatim. 7 known limitations including
 honest assessment of sandbox security, meta-agent attribution being
-correlational not causal, 15 cases being too few for statistical significance.
+correlational not causal, 15 cases being too few for statistical
+significance.
 **What was changed:** Nothing.
-**Why Opus:** README is a primary evaluation artifact. A senior engineer
-reads it first. Sonnet produces adequate READMEs; Opus produces ones
-that demonstrate systems thinking in the limitations section.
+**Why Opus:** README is a primary evaluation artifact. Senior engineers
+read it first. Opus produces READMEs that demonstrate systems thinking
+in the limitations section.
+
+---
+
+### Block 18 — HTML demo client
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What was asked:** Single-file terminal-style SSE client, no npm.
+Named SSE listeners per event type, auto-scroll, clear button.
+**What was kept:** Named addEventListener per event type (not onmessage),
+onerror CLOSED state guard, esc() XSS helper, Ctrl+Enter shortcut.
+**What was changed:** Nothing.
+**What was caught:** Nothing — clean first run.
+
+---
+
+### Block 19 — Wire rerun_eval + approval endpoint
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What was asked:** Implement rerun_eval Celery task with real DB
+logic, wire meta-agent into approval endpoint as fire-and-forget.
+**What was kept:** Defensive JSON parsing on psycopg2, failed_ids or
+None fallback to full re-run, closure capture to avoid
+DetachedInstanceError.
+**What was changed:** Nothing structural.
+**What was caught:** run_meta_agent deferred import inside coroutine
+to avoid ANTHROPIC_API_KEY requirement at import time.
+
+---
+
+### Block 20 — Troubleshooting: port conflicts + Docker networking
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What happened:** Three sequential environment issues:
+1. OrbStack holding ports 8000/5432/5433 — remapped to 8001/5434
+2. Docker containers using localhost URLs — added environment: overrides
+   in docker-compose.yml for api and worker services
+3. ANTHROPIC_API_KEY and GOOGLE_API_KEY not declared in Settings —
+   added as optional fields with empty string defaults
+**What was caught:** Real API keys accidentally exposed in terminal
+output during debugging — all three keys rotated immediately.
+
+---
+
+### Block 21 — Troubleshooting: LLM swap + budget floor
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What happened:** Anthropic API returned 400 (credit balance too low).
+Switched all agents and tools from ChatAnthropic to
+ChatGoogleGenerativeAI/gemini-2.0-flash via sed across the codebase.
+Gemini routing plan returning tiny budget_tokens caused budget_exceeded
+on every agent — fixed with max(..., 4000) floor.
+**What was kept:** All agent logic unchanged, only LLM client swapped.
+**What was caught:** Gemini correctly omits agents for simple queries —
+LLM-driven routing working as designed, not a bug.
+
+---
+
+### Block 22 — Troubleshooting: corpus + embeddings
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What happened:** document_chunks not in SQLAlchemy models so table
+didn't exist. Created manually via psql with ivfflat index (vector(1536)).
+Attempted to use text-embedding-3-large (3072d) which conflicted with
+ivfflat 2000-dimension limit. Switched to text-embedding-3-small (1536d).
+Seeding ran from Mac host (localhost:5434) but api container reads from
+postgres:5432 — data appeared empty to agents. Fixed by seeding from
+inside the api container.
+**What was caught:** Container networking isolation — DB operations must
+run inside the container that will query them, not from the host.
+**Final result:** Pipeline produces cited answers:
+'Binary search is O(log n) [c1, c7]' — RAG citations working correctly.

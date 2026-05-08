@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Import named prompt constants from each agent module
 from app.agents.critique import _SYSTEM as _CRITIQUE_SYSTEM
@@ -82,7 +82,7 @@ async def run_meta_agent(eval_summary: dict) -> dict:
     current_prompt = AGENT_PROMPTS.get(worst_agent_id, "")
 
     # ── 3. Call Claude Haiku for a rewrite proposal ───────────────────────────
-    llm = ChatAnthropic(model="claude-haiku-4-5", temperature=0)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
 
     failure_context = json.dumps(worst_case_data, indent=2, default=str)[:1000]
 

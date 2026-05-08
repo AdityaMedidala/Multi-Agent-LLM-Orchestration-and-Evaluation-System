@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.tools.registry import ToolResult
 
@@ -29,7 +29,7 @@ async def self_reflect(job_id: str, agent_id: str, ctx_dict: dict) -> ToolResult
 
     other_outputs = {k: v for k, v in agent_outputs.items() if k != agent_id}
 
-    llm = ChatAnthropic(model="claude-haiku-4-5", temperature=0)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
     prompt = _PROMPT_TEMPLATE.format(
         previous_output=previous_output,
         other_outputs=other_outputs,
