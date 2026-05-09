@@ -55,7 +55,7 @@ curl localhost:8001/jobs/j_8f3a2c/trace
 
 ```bash
 curl localhost:8001/eval/latest
-# {"run_id":"er_44","cases":15,"weighted_score":0.71,
+# {"run_id":"er_44","cases":15,"weighted_score":0.749,
 #  "by_dimension":{...},"failures":["adv-inj-2","amb-3"]}
 ```
 
@@ -159,6 +159,25 @@ Weights sum to 1.00.
 - **Wrong-premise cases**: the rubric rewards identifying and rejecting the false premise. Confidently agreeing with the premise scores below silently ignoring it.
 - **Contradiction-forcing cases**: the rubric rewards surfacing the contradiction explicitly. Picking one side without flagging the conflict scores zero on `contradiction_resolution` regardless of which side is "more correct."
 
+### Baseline Comparison
+
+To validate that multi-agent complexity is justified, a single-LLM
+baseline was run against the same 15 test cases (Gemini 2.0 Flash,
+one call, no agents, no RAG, no tools):
+
+| System | Passed | Avg Score | Baseline | Ambiguous | Adversarial |
+|---|---|---|---|---|---|
+| **Multi-agent pipeline** | **12/15** | **0.749** | 5/5 (0.901) | 3/5 (0.666) | 4/5 (0.679) |
+| Single LLM (no RAG) | 6/15 | 0.388 | 4/5 (0.710) | 1/5 (0.280) | 1/5 (0.174) |
+
+The multi-agent system shows **93% improvement** in overall score over
+the baseline. The largest gains are on ambiguous queries (+138%) and
+adversarial queries (+290%), which are precisely the cases that benefit
+from decomposition, retrieval grounding, and critique-based fact-checking.
+
+The baseline is runnable via `POST /eval/baseline` and takes ~45 seconds.
+Source: `app/eval/baseline.py`.
+
 ---
 
 ## Self-improving loop
@@ -189,6 +208,7 @@ These are real, not theatrical.
 7. **NL→SQL has no planner feedback.** When `data_lookup` produces a wrong query, the failure surfaces as a bad answer rather than a diagnostic — there's no loop that feeds `EXPLAIN` or empty-result-set signals back into the LLM.
 8. **The self-improving loop audits and stores rewrite proposals but does not currently hot-load approved prompts into running agents.** Re-evals after approval run with original prompts; delta will be zero. Fixing this requires a prompt registry that agents load at call time.
 9. **The document_chunks corpus is seeded via scripts/seed_corpus.py (run after docker compose up).** The RAG agent falls back to web search for queries with no corpus match.
+10. **Cohere rerank uses a trial API key limited to 10 calls/minute.** Concurrent jobs or rapid sequential requests may trigger rate-limiting, causing RAG to fall back to synthesis without retrieved context. A production Cohere key removes this constraint entirely.
 
 ---
 
