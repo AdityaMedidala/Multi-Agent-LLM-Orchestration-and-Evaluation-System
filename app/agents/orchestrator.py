@@ -234,9 +234,27 @@ class OrchestratorAgent(BaseAgent):
             token_count=0,
         )
 
+        # ── 2b. Enforce subtask dependency order (pre-populated subtasks) ─────
+        # Also applied mid-loop after decomposition runs (see below).
+        routing_plan = self._build_execution_order(ctx, routing_plan)
+
         # ── 2. Execute agents in the decided order ────────────────────────────
+        # Use a while loop with an explicit index so that after decomposition
+        # populates ctx.subtasks we can splice a re-ordered tail into plan_queue
+        # before the remaining steps execute.
         results: list[AgentResult] = []
-        for step in routing_plan:
+        agent_type_map = {
+            "rag": "retrieve",
+            "synthesis": "synthesize",
+            "critique": "critique",
+            "decomposition": "decompose",
+        }
+        plan_queue = list(routing_plan)
+        step_idx = 0
+        while step_idx < len(plan_queue):
+            step = plan_queue[step_idx]
+            step_idx += 1  # increment first so any `continue` skips cleanly
+
             agent_name: str = step["agent"]
             reason: str = step.get("reason", "")
             budget = max(step.get("budget_tokens", 4000), 4000)
@@ -313,6 +331,22 @@ class OrchestratorAgent(BaseAgent):
 
             results.append(result)
 
+            # Mark subtasks complete for this agent
+            completed_type = agent_type_map.get(agent_name)
+            if completed_type:
+                for st in ctx.subtasks:
+                    if st.task_type == completed_type and st.status == "pending":
+                        st.status = "done"
+                        st.result = {"summary": str(result.output)[:200]}
+                        break
+
+            # After decomposition populates ctx.subtasks, re-order the remaining
+            # steps in plan_queue so later agents respect dependency order.
+            if agent_name == "decomposition" and ctx.subtasks:
+                remaining = plan_queue[step_idx:]
+                reordered = self._build_execution_order(ctx, remaining)
+                plan_queue = plan_queue[:step_idx] + reordered
+
         # Ensure final_answer is always set even if all agents fail
         if not ctx.final_answer and ctx.agent_outputs:
             for aid in ("synthesis", "rag", "decomposition"):
@@ -336,6 +370,91 @@ class OrchestratorAgent(BaseAgent):
             tokens_used=total_tokens,
             latency_ms=latency_ms,
         )
+
+    def _build_execution_order(
+        self, ctx: SharedContext, routing_plan: list[dict]
+    ) -> list[dict]:
+        """
+        Reorders the routing plan to respect subtask dependencies.
+        If decomposition produced a dependency graph in ctx.subtasks,
+        use topological sort to enforce execution order.
+        Falls back to original plan if no subtasks or cycle detected.
+        """
+        subtasks = ctx.subtasks
+        if not subtasks:
+            return routing_plan
+
+        # Build dependency map: task_id → list of task_ids it depends on
+        dep_map: dict[str, list[str]] = {
+            st.task_id: st.dependencies for st in subtasks
+        }
+        task_types: dict[str, str] = {
+            st.task_id: st.task_type for st in subtasks
+        }
+
+        # Topological sort (Kahn's algorithm)
+        from collections import deque
+        in_degree = {tid: 0 for tid in dep_map}
+        dependents: dict[str, list[str]] = {tid: [] for tid in dep_map}
+        for tid, deps in dep_map.items():
+            in_degree[tid] += len(deps)
+            for dep in deps:
+                if dep in dependents:
+                    dependents[dep].append(tid)
+
+        queue = deque(tid for tid, deg in in_degree.items() if deg == 0)
+        ordered_task_ids: list[str] = []
+        while queue:
+            tid = queue.popleft()
+            ordered_task_ids.append(tid)
+            for dependent in dependents.get(tid, []):
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+        if len(ordered_task_ids) != len(dep_map):
+            # Cycle detected — fall back to original plan
+            log.warning("Cycle in subtask dependency graph, using original plan")
+            return routing_plan
+
+        # Map task_type to agent_name
+        type_to_agent = {
+            "retrieve": "rag",
+            "synthesize": "synthesis",
+            "critique": "critique",
+            "decompose": "decomposition",
+        }
+
+        # Build reordered plan based on dependency-sorted task types
+        reordered: list[dict] = []
+        seen_agents: set[str] = set()
+        for tid in ordered_task_ids:
+            task_type = task_types.get(tid, "")
+            agent_name = type_to_agent.get(task_type)
+            if agent_name and agent_name not in seen_agents:
+                # Find matching step in original routing_plan
+                matching = next(
+                    (s for s in routing_plan if s["agent"] == agent_name),
+                    None,
+                )
+                if matching:
+                    reordered.append(matching)
+                    seen_agents.add(agent_name)
+
+        # Add any routing_plan steps not covered by subtasks
+        for step in routing_plan:
+            if step["agent"] not in seen_agents:
+                reordered.append(step)
+                seen_agents.add(step["agent"])
+
+        if reordered:
+            ctx.log_routing(
+                f"dependency_enforcement: reordered {len(routing_plan)} steps "
+                f"via {len(ordered_task_ids)} subtask dependencies"
+            )
+            return reordered
+
+        return routing_plan
 
     async def _get_routing_plan(
         self, messages: list
