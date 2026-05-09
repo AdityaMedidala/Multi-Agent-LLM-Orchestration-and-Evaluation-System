@@ -1,6 +1,6 @@
 # mega-ai
 
-A production multi-agent LLM system built around a four-agent async pipeline (Decomposition → RAG → Critique → Synthesis), orchestrated by an LLM-generated JSON routing plan rather than hardcoded edges. The system answers research-style queries with span-level claim provenance, ships with a 15-case adversarial eval harness scored across six dimensions, and includes a meta-agent that proposes prompt rewrites for failing cases — gated behind explicit human approval. Stack: FastAPI, Gemini 2.0 Flash (gemini-2.0-flash), OpenAI embeddings, Cohere rerank, pgvector, PostgreSQL, Redis, Celery, Docker Compose.
+A production multi-agent LLM system built around a four-agent async pipeline (Decomposition → RAG → Critique → Synthesis), orchestrated by an LLM-generated JSON routing plan rather than hardcoded edges. The system answers research-style queries with span-level claim provenance, ships with a 15-case adversarial eval harness scored across six dimensions, and includes a meta-agent that proposes prompt rewrites for failing cases — gated behind explicit human approval. Stack: FastAPI, LangChain, Gemini 2.0 Flash (gemini-2.0-flash), OpenAI embeddings, Cohere rerank, pgvector, PostgreSQL, Redis, Celery, Docker Compose.
 
 ---
 
