@@ -50,7 +50,7 @@ async def data_lookup(natural_language_query: str) -> ToolResult:
             success=False,
             output={},
             latency_ms=0,
-            failure_reason="timeout",
+            failure_reason="llm_error",
         )
 
     # ── 1a. Strip markdown code fences the LLM may add ───────────────────────
@@ -84,7 +84,7 @@ async def data_lookup(natural_language_query: str) -> ToolResult:
             success=False,
             output={"sql": sql},
             latency_ms=0,
-            failure_reason="timeout",
+            failure_reason="db_error",
         )
 
     if not rows:

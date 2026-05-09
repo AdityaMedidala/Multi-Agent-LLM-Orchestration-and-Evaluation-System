@@ -8,7 +8,7 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -31,7 +31,19 @@ app.add_middleware(
 # ── Request bodies ────────────────────────────────────────────────────────────
 
 class CreateJobRequest(BaseModel):
-    query: str
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=10000,
+        description="The query to process. Must be non-empty and under 10,000 characters.",
+    )
+
+    @field_validator("query")
+    @classmethod
+    def query_not_whitespace(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("query must not be empty or whitespace only")
+        return v.strip()
 
 
 class ReviewRequest(BaseModel):

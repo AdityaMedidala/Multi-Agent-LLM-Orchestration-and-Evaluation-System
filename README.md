@@ -208,7 +208,9 @@ These are real, not theatrical.
 7. **NL→SQL has no planner feedback.** When `data_lookup` produces a wrong query, the failure surfaces as a bad answer rather than a diagnostic — there's no loop that feeds `EXPLAIN` or empty-result-set signals back into the LLM.
 8. **The self-improving loop audits and stores rewrite proposals but does not currently hot-load approved prompts into running agents.** Re-evals after approval run with original prompts; delta will be zero. Fixing this requires a prompt registry that agents load at call time.
 9. **The document_chunks corpus is seeded via scripts/seed_corpus.py (run after docker compose up).** The RAG agent falls back to web search for queries with no corpus match.
-10. **Cohere rerank uses a trial API key limited to 10 calls/minute.** Concurrent jobs or rapid sequential requests may trigger rate-limiting, causing RAG to fall back to synthesis without retrieved context. A production Cohere key removes this constraint entirely.
+10. **Cohere rerank uses a trial API key limited to 10 calls/minute.**
+11. **web_search and code_executor are not orchestrator-plannable tools.** web_search fires as an internal RAG fallback; code_executor is registered but not invoked by any agent in the current pipeline. The orchestrator routing prompt only exposes data_lookup as a plannable tool step.
+12. **The code_executor sandbox uses regex-based import blocking that can be bypassed via `__import__()`, `importlib`, or `exec()`.** It provides no real security boundary against intentional evasion, only against accidental unsafe code. Concurrent jobs or rapid sequential requests may trigger rate-limiting, causing RAG to fall back to synthesis without retrieved context. A production Cohere key removes this constraint entirely.
 
 ---
 

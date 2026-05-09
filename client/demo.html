@@ -148,6 +148,7 @@
     .event-agent_done   { color: #22d3ee; }
     .event-tool_call    { color: #fbbf24; }
     .event-budget       { color: #555; }
+    .event-token        { color: #a78bfa; white-space: pre-wrap; word-break: break-word; }
     .event-final        {
       color: white;
       background: #1a1a1a;
@@ -344,6 +345,31 @@
 
       namedEvents.forEach(evtType => {
         es.addEventListener(evtType, e => handleEvent(evtType, e.data));
+      });
+
+      // Token streaming — accumulate into a per-agent line rather than
+      // creating a new DOM node for every character.
+      const _tokenEls = {};
+      es.addEventListener("token", e => {
+        let d = {};
+        try { d = JSON.parse(e.data); } catch (_) {}
+        const agent = d.agent || "unknown";
+        if (!_tokenEls[agent]) {
+          removePlaceholder();
+          const div = document.createElement("div");
+          div.className = "event-line event-token";
+          div.dataset.tokenAgent = agent;
+          const label = document.createElement("span");
+          label.style.color = "#555";
+          label.textContent = `[${agent}] `;
+          div.appendChild(label);
+          const content = document.createElement("span");
+          div.appendChild(content);
+          terminal.appendChild(div);
+          _tokenEls[agent] = content;
+        }
+        _tokenEls[agent].textContent += d.token || "";
+        terminal.scrollTop = terminal.scrollHeight;
       });
 
       // Fallback for unnamed "message" events

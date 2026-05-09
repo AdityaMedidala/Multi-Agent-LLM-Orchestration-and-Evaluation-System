@@ -11,13 +11,23 @@ async def web_search(query: str, max_results: int = 5) -> "ToolResult":
     try:
         with DDGS() as ddgs:
             raw = list(ddgs.text(query, max_results=max_results))
-    except Exception:
+    except Exception as exc:
+        exc_type = type(exc).__name__
+        exc_str = str(exc).lower()
+        if "timeout" in exc_type.lower() or "timeout" in exc_str:
+            reason = "timeout"
+        elif "429" in str(exc) or "rate" in exc_str or "toomany" in exc_type.lower():
+            reason = "rate_limited"
+        elif "connect" in exc_str or "network" in exc_str:
+            reason = "network_error"
+        else:
+            reason = "malformed"
         return ToolResult(
             tool_name="web_search",
             success=False,
             output={},
             latency_ms=0,
-            failure_reason="malformed",
+            failure_reason=reason,
         )
 
     if not raw:
