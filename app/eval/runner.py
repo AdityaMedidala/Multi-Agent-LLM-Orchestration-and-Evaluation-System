@@ -230,6 +230,9 @@ async def run_eval(case_ids: list[str] | None = None) -> dict:
             )
         )
 
+        import asyncio as _asyncio
+        await _asyncio.sleep(4)  # 4s between cases ≈ 15 cases/min, safely under Cohere rate limit
+
     # ── Build summary ─────────────────────────────────────────────────────────
     by_category: dict[str, dict] = {}
     for cat in ("baseline", "ambiguous", "adversarial"):

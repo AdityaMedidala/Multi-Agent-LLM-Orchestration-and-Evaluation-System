@@ -136,15 +136,28 @@ class RAGAgent(BaseAgent):
     ) -> list[tuple[float, dict]]:
         if not fused:
             return fused
+        import asyncio as _asyncio
         # Fresh client per call: avoids stale httpx transport after Celery fork
         _cohere = cohere.AsyncClient(api_key=settings.cohere_api_key)
-        response = await _cohere.rerank(
-            model=RERANK_MODEL,
-            query=query,
-            documents=[item["text"] for _, item in fused],
-            top_n=RERANK_TOP_N,
-            return_documents=False,
-        )
+        for _attempt in range(4):  # up to 4 attempts
+            try:
+                response = await _cohere.rerank(
+                    model=RERANK_MODEL,
+                    query=query,
+                    documents=[item["text"] for _, item in fused],
+                    top_n=RERANK_TOP_N,
+                    return_documents=False,
+                )
+                break  # success
+            except cohere.errors.too_many_requests_error.TooManyRequestsError:
+                if _attempt == 3:
+                    raise
+                wait = 6 * (2 ** _attempt)  # 6s, 12s, 24s
+                log.warning(
+                    "Cohere rate-limited, retrying in %ds (attempt %d/4)",
+                    wait, _attempt + 1,
+                )
+                await _asyncio.sleep(wait)
         return [(r.relevance_score, fused[r.index][1]) for r in response.results]
 
     # ── Single retrieve + rerank pass ─────────────────────────────────────────
