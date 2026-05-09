@@ -69,14 +69,16 @@ def run_pipeline(self, job_id: str, query: str) -> dict:  # noqa: ANN001
         publish_event_sync(job_id, "error", {"message": str(exc)})
         raise
 
-    # Temporarily store final_answer in job.query until a dedicated column exists
     conn = _db_conn()
     try:
         with conn.cursor() as cur:
+            # 1. Update status only — preserve original query
             cur.execute(
-                "UPDATE jobs SET status = %s, query = %s, updated_at = NOW() WHERE id = %s::uuid",
-                ("done", ctx.final_answer or query, job_id),
+                "UPDATE jobs SET status = %s, updated_at = NOW() WHERE id = %s::uuid",
+                ("done", job_id),
             )
+            # 2. final_answer is already stored in ctx.agent_outputs["synthesis"]["final_answer"]
+            #    which is written to agent_logs payload by the orchestrator — no additional storage needed
         conn.commit()
     finally:
         conn.close()

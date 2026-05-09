@@ -93,9 +93,29 @@ async def stream_job(
     async def event_generator():
         # If job already done, emit final_answer and close immediately
         if job.status == "done":
+            # Read final answer from agent_logs (synthesis output payload)
+            import json as _json
+            from sqlalchemy import text
+            log_result = await db.execute(
+                text("""
+                    SELECT payload FROM agent_logs
+                    WHERE job_id = :job_id
+                      AND agent_id = 'synthesis'
+                      AND event_type = 'output'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """),
+                {"job_id": str(job_uuid)},
+            )
+            row = log_result.fetchone()
+            if row:
+                payload = _json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                answer = payload.get("output", {}).get("final_answer", "")
+            else:
+                answer = ""
             yield {
                 "event": "final_answer",
-                "data": json.dumps({"answer": job.query}),
+                "data": json.dumps({"answer": answer}),
             }
             yield {"event": "done", "data": "{}"}
             return
