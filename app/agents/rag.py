@@ -169,33 +169,61 @@ class RAGAgent(BaseAgent):
     # ── Web search fallback ───────────────────────────────────────────────────
 
     async def _web_search_fallback(
-        self, query: str, ctx: SharedContext
+        self, query: str, ctx: SharedContext, max_attempts: int = 3
     ) -> list[tuple[float, dict]]:
         from app.tools.web_search import web_search as _web_search  # deferred to avoid circular import
-        start = time.monotonic()
-        tool_result = await _web_search(query, max_results=5)
-        latency = int((time.monotonic() - start) * 1000)
-        ctx.tool_call_log.append(ToolCallRecord(
-            tool_name="web_search",
-            attempt=1,
-            input={"query": query},
-            output=tool_result.output if tool_result.success else {},
-            latency_ms=latency,
-            accepted=tool_result.success,
-            failure_reason=tool_result.failure_reason,
-        ))
-        if not tool_result.success:
-            return []
-        results = tool_result.output.get("results", [])
-        fused = []
-        for i, r in enumerate(results):
-            score = max(1.0 - (i * 0.1), 0.1)
-            fused.append((score, {
-                "chunk_id": f"web_{i}",
-                "text": f"{r.get('title', '')}. {r.get('snippet', '')}",
-                "metadata": {"source": r.get("url", "web"), "type": "web"},
-            }))
-        return fused
+
+        # Query variations for retries
+        query_variants = [
+            query,                              # attempt 1: original
+            f"{query} explanation overview",    # attempt 2: broader
+            " ".join(query.split()[:4]),        # attempt 3: first 4 words only
+        ]
+
+        for attempt, q in enumerate(query_variants[:max_attempts], start=1):
+            start_t = time.monotonic()
+            tool_result = await _web_search(q, max_results=5)
+            latency = int((time.monotonic() - start_t) * 1000)
+
+            # Log each attempt separately (spec requirement)
+            ctx.tool_call_log.append(ToolCallRecord(
+                tool_name="web_search",
+                attempt=attempt,
+                input={"query": q},
+                output=tool_result.output if tool_result.success else {},
+                latency_ms=latency,
+                accepted=tool_result.success and bool(
+                    tool_result.output.get("results")
+                ),
+                failure_reason=tool_result.failure_reason,
+            ))
+
+            # Agent evaluates result sufficiency
+            if tool_result.success and tool_result.output.get("results"):
+                results = tool_result.output["results"]
+                return [
+                    (max(1.0 - i * 0.1, 0.1), {
+                        "chunk_id": f"web_{attempt}_{i}",
+                        "text": f"{r.get('title', '')}. {r.get('snippet', '')}",
+                        "metadata": {
+                            "source": r.get("url", "web"),
+                            "type": "web",
+                            "search_attempt": attempt,
+                            "query_used": q,
+                        },
+                    })
+                    for i, r in enumerate(results)
+                ]
+
+            # Result insufficient — log rejection reason and retry
+            if attempt < max_attempts:
+                ctx.orchestrator_reasoning.append(
+                    f"web_search attempt {attempt} rejected "
+                    f"(reason: {tool_result.failure_reason or 'empty'}), "
+                    f"retrying with modified query: '{query_variants[attempt]}'"
+                )
+
+        return []  # All attempts exhausted
 
     # ── Agent entry point ─────────────────────────────────────────────────────
 
