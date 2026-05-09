@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -184,3 +185,19 @@ class EvalRerun(Base):
     )
 
     prompt_rewrite: Mapped["PromptRewrite"] = relationship(back_populates="eval_reruns")
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+
+    chunk_id     = mapped_column(String, primary_key=True)
+    text         = mapped_column(Text, nullable=False)
+    doc_metadata = mapped_column("metadata", JSON, nullable=True)
+    embedding    = mapped_column(Vector(1536), nullable=True)
+    # ts (tsvector) is a generated column — not mapped in ORM,
+    # managed by DB generated expression
+    created_at = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )

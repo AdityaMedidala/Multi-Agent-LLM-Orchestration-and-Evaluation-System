@@ -1,6 +1,7 @@
 from app.db.database import Base, get_db
 from app.db.models import (
     AgentLog,
+    DocumentChunk,
     EvalRerun,
     EvalRun,
     Job,
@@ -17,4 +18,5 @@ __all__ = [
     "EvalRun",
     "PromptRewrite",
     "EvalRerun",
+    "DocumentChunk",
 ]
