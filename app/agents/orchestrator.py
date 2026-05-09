@@ -145,11 +145,18 @@ class OrchestratorAgent(BaseAgent):
         start = time.monotonic()
 
         # ── 1. Ask the LLM for a routing plan ────────────────────────────────
+        from app.streaming import publish_event
         messages = [
             ("system", _ROUTING_SYSTEM),
             ("human", _ROUTING_USER.format(query=ctx.original_query)),
         ]
+        await publish_event(ctx.job_id, "agent_start", {
+            "agent": self.agent_id, "ts": time.monotonic()
+        })
         routing_plan, overall_reasoning = await self._get_routing_plan(messages)
+        await publish_event(ctx.job_id, "agent_done", {
+            "agent": self.agent_id, "tokens": 0
+        })
         ctx.log_routing(f"orchestrator_reasoning: {overall_reasoning}")
 
         # Log the orchestrator's own routing decision

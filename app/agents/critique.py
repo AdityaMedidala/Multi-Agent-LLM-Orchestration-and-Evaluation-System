@@ -80,14 +80,28 @@ class CritiqueAgent(BaseAgent):
         )
         try:
             from app.agents.prompt_registry import get_active_prompt
+            from app.streaming import publish_event
             system = get_active_prompt("critique", _SYSTEM)
-            response = await self._llm.ainvoke(
+            raw = ""
+            await publish_event(ctx.job_id, "agent_start", {
+                "agent": self.agent_id, "ts": time.monotonic()
+            })
+            async for chunk in self._llm.astream(
                 [
                     ("system", system),
                     ("human", f"Review these agent outputs:\n{formatted_outputs}"),
                 ]
-            )
-            raw: str = response.content.strip()
+            ):
+                token = chunk.content
+                if token:
+                    raw += token
+                    await publish_event(ctx.job_id, "token", {
+                        "agent": self.agent_id, "token": token
+                    })
+            await publish_event(ctx.job_id, "agent_done", {
+                "agent": self.agent_id, "tokens": len(raw)
+            })
+            raw = raw.strip()
 
             # ── 4. Parse JSON (strip markdown fences if present) ──────────────
             if raw.startswith("```"):
@@ -133,10 +147,7 @@ class CritiqueAgent(BaseAgent):
         }
 
         # ── 7. Return result ──────────────────────────────────────────────────
-        usage = response.usage_metadata or {}
-        tokens_used = (
-            usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-        )
+        tokens_used = len(raw.split())  # estimate; astream has no usage_metadata
 
         return AgentResult(
             agent_id=self.agent_id,

@@ -292,20 +292,34 @@ class RAGAgent(BaseAgent):
                 for score, item, hop in merged[:5]
             ]
 
-            # ── 6. Generate answer ────────────────────────────────────────────
+            # ── 6. Generate answer (streaming) ────────────────────────────────
+            from app.agents.prompt_registry import get_active_prompt
+            from app.streaming import publish_event
             formatted_chunks = "\n\n".join(
                 f"[{item['chunk_id']}]\n{item['text']}"
                 for _, item, _ in merged[:5]
             )
-            from app.agents.prompt_registry import get_active_prompt
             answer_system = get_active_prompt("rag", _ANSWER_SYSTEM)
-            answer_resp = await self._llm.ainvoke(
+            answer = ""
+            await publish_event(ctx.job_id, "agent_start", {
+                "agent": self.agent_id, "ts": time.monotonic()
+            })
+            async for chunk in self._llm.astream(
                 [
                     ("system", answer_system),
                     ("human", f"Query: {query}\n\nContext:\n{formatted_chunks}"),
                 ]
-            )
-            answer: str = answer_resp.content.strip()
+            ):
+                token = chunk.content
+                if token:
+                    answer += token
+                    await publish_event(ctx.job_id, "token", {
+                        "agent": self.agent_id, "token": token
+                    })
+            await publish_event(ctx.job_id, "agent_done", {
+                "agent": self.agent_id, "tokens": len(answer)
+            })
+            answer = answer.strip()
 
             # ── 7. Store in ctx ───────────────────────────────────────────────
             ctx.agent_outputs[self.agent_id] = {
@@ -331,12 +345,10 @@ class RAGAgent(BaseAgent):
 
             # ── 9. Return result ──────────────────────────────────────────────
             fu_usage = followup_resp.usage_metadata or {}
-            an_usage = answer_resp.usage_metadata or {}
             tokens_used = (
                 fu_usage.get("input_tokens", 0)
                 + fu_usage.get("output_tokens", 0)
-                + an_usage.get("input_tokens", 0)
-                + an_usage.get("output_tokens", 0)
+                + len(answer.split())  # estimate for streamed answer
             )
 
             return AgentResult(

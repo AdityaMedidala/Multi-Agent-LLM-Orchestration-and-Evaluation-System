@@ -53,16 +53,20 @@ def run_pipeline(self, job_id: str, query: str) -> dict:  # noqa: ANN001
     from app.agents.orchestrator import OrchestratorAgent
     from app.schemas.context import SharedContext
 
+    from app.streaming import publish_event_sync
+
     _update_job_status(job_id, "running")
+    publish_event_sync(job_id, "job_start", {"query": query})
 
     ctx = SharedContext(job_id=job_id, original_query=query)
     orchestrator = OrchestratorAgent()
 
     try:
         result = asyncio.run(orchestrator.run(ctx))
-    except Exception:
+    except Exception as exc:
         log.exception("Pipeline failed for job %s", job_id)
         _update_job_status(job_id, "failed")
+        publish_event_sync(job_id, "error", {"message": str(exc)})
         raise
 
     # Temporarily store final_answer in job.query until a dedicated column exists
@@ -76,6 +80,9 @@ def run_pipeline(self, job_id: str, query: str) -> dict:  # noqa: ANN001
         conn.commit()
     finally:
         conn.close()
+
+    publish_event_sync(job_id, "final_answer", {"answer": ctx.final_answer or ""})
+    publish_event_sync(job_id, "done", {})
 
     return {"job_id": job_id, "status": "done"}
 

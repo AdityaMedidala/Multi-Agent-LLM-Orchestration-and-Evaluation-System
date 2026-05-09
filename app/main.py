@@ -4,7 +4,7 @@ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import AsyncGenerator, Literal
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,104 +67,47 @@ async def create_job(
 
 # ── GET /jobs/{job_id}/stream  (SSE) ─────────────────────────────────────────
 
-# Maps AgentLog.event_type values to SSE event names
-_LOG_EVENT_MAP = {
-    "start": "agent_start",
-    "output": "agent_done",
-    "budget_violation": "budget_update",
-}
-
-
 @app.get("/jobs/{job_id}/stream")
-async def stream_job(job_id: str) -> EventSourceResponse:
-    async def _generate() -> AsyncGenerator[dict, None]:
-        try:
-            job_uuid = uuid.UUID(job_id)
-        except ValueError:
-            yield {"event": "error", "data": json.dumps({"message": "invalid job_id"})}
+async def stream_job(
+    job_id: str, db: AsyncSession = Depends(get_db)
+) -> EventSourceResponse:
+    from app.streaming import token_stream
+
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid job_id")
+
+    result = await db.execute(select(Job).where(Job.id == job_uuid))
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "JOB_NOT_FOUND",
+                "message": f"Job {job_id} not found",
+                "job_id": job_id,
+            },
+        )
+
+    async def event_generator():
+        # If job already done, emit final_answer and close immediately
+        if job.status == "done":
+            yield {
+                "event": "final_answer",
+                "data": json.dumps({"answer": job.query}),
+            }
+            yield {"event": "done", "data": "{}"}
             return
 
-        seen_log_ids: set[str] = set()
-        seen_tool_ids: set[str] = set()
+        # Stream live events from Redis pub/sub
+        async for event_type, data in token_stream(job_id):
+            yield {
+                "event": event_type,
+                "data": json.dumps(data),
+            }
 
-        while True:
-            async with AsyncSessionLocal() as session:
-                job = await session.get(Job, job_uuid)
-                if job is None:
-                    yield {
-                        "event": "error",
-                        "data": json.dumps({"message": "job not found", "job_id": job_id}),
-                    }
-                    return
-
-                # Stream any new AgentLog entries
-                log_rows = (
-                    await session.execute(
-                        select(AgentLog)
-                        .where(AgentLog.job_id == job_uuid)
-                        .order_by(AgentLog.created_at)
-                    )
-                ).scalars().all()
-
-                for log in log_rows:
-                    lid = str(log.id)
-                    if lid not in seen_log_ids:
-                        seen_log_ids.add(lid)
-                        yield {
-                            "event": _LOG_EVENT_MAP.get(log.event_type, log.event_type),
-                            "data": json.dumps({
-                                "agent_id": log.agent_id,
-                                "event_type": log.event_type,
-                                "token_count": log.token_count,
-                                "latency_ms": log.latency_ms,
-                                "policy_violation": log.policy_violation,
-                            }),
-                        }
-
-                # Stream any new ToolCall entries
-                tool_rows = (
-                    await session.execute(
-                        select(ToolCall)
-                        .where(ToolCall.job_id == job_uuid)
-                        .order_by(ToolCall.created_at)
-                    )
-                ).scalars().all()
-
-                for tc in tool_rows:
-                    tid = str(tc.id)
-                    if tid not in seen_tool_ids:
-                        seen_tool_ids.add(tid)
-                        yield {
-                            "event": "tool_call",
-                            "data": json.dumps({
-                                "tool_name": tc.tool_name,
-                                "agent_id": tc.agent_id,
-                                "attempt": tc.attempt_number,
-                                "accepted": tc.accepted,
-                                "latency_ms": tc.latency_ms,
-                            }),
-                        }
-
-                # Terminal states
-                if job.status == "done":
-                    yield {
-                        "event": "final_answer",
-                        "data": json.dumps({"answer": job.query}),
-                    }
-                    yield {"event": "done", "data": "{}"}
-                    return
-
-                if job.status == "failed":
-                    yield {
-                        "event": "error",
-                        "data": json.dumps({"message": "job failed", "job_id": job_id}),
-                    }
-                    yield {"event": "done", "data": "{}"}
-                    return
-
-            await asyncio.sleep(0.5)
-
-    return EventSourceResponse(_generate())
+    return EventSourceResponse(event_generator())
 
 
 # ── GET /jobs/{job_id}/trace ──────────────────────────────────────────────────

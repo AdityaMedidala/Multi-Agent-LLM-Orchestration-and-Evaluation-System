@@ -62,13 +62,27 @@ class DecompositionAgent(BaseAgent):
             )
 
         try:
-            # ── 2. LLM call ───────────────────────────────────────────────────
+            # ── 2. LLM call (streaming) ───────────────────────────────────────
             from app.agents.prompt_registry import get_active_prompt
+            from app.streaming import publish_event
             system = get_active_prompt("decomposition", _SYSTEM)
-            response = await self._llm.ainvoke(
+            raw = ""
+            await publish_event(ctx.job_id, "agent_start", {
+                "agent": self.agent_id, "ts": time.monotonic()
+            })
+            async for chunk in self._llm.astream(
                 [("system", system), ("human", ctx.original_query)]
-            )
-            raw: str = response.content.strip()
+            ):
+                token = chunk.content
+                if token:
+                    raw += token
+                    await publish_event(ctx.job_id, "token", {
+                        "agent": self.agent_id, "token": token
+                    })
+            await publish_event(ctx.job_id, "agent_done", {
+                "agent": self.agent_id, "tokens": len(raw)
+            })
+            raw = raw.strip()
 
             # ── 3. Parse JSON (strip markdown fences if present) ──────────────
             if raw.startswith("```"):
@@ -105,10 +119,7 @@ class DecompositionAgent(BaseAgent):
             }
 
             # ── 7. Build AgentResult ──────────────────────────────────────────
-            usage = response.usage_metadata or {}
-            tokens_used = (
-                usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-            )
+            tokens_used = len(raw.split())  # estimate; astream has no usage_metadata
             elapsed_ms = int((time.monotonic() - start) * 1000)
 
             return AgentResult(
