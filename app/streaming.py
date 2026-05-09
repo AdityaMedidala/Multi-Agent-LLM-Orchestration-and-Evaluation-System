@@ -39,9 +39,9 @@ async def token_stream(job_id: str, timeout_seconds: int = 120):
     pubsub = r.pubsub()
     await pubsub.subscribe(_channel(job_id))
     try:
-        deadline = asyncio.get_event_loop().time() + timeout_seconds
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
         async for message in pubsub.listen():
-            if asyncio.get_event_loop().time() > deadline:
+            if asyncio.get_running_loop().time() > deadline:
                 yield "error", {"message": "stream timeout"}
                 break
             if message["type"] != "message":
@@ -60,7 +60,7 @@ async def token_stream(job_id: str, timeout_seconds: int = 120):
 def publish_event_sync(job_id: str, event_type: str, data: dict) -> None:
     """Sync wrapper for use in Celery tasks."""
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         if loop.is_closed():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
