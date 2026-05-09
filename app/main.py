@@ -175,7 +175,36 @@ async def get_trace(
     final_answer = ""
     if fa_row:
         fa_payload = _json.loads(fa_row[0]) if isinstance(fa_row[0], str) else fa_row[0]
-        final_answer = fa_payload.get("output", {}).get("final_answer", "")
+        final_answer = (
+            fa_payload.get("output", {}).get("final_answer", "")
+            or fa_payload.get("output", {}).get("answer", "")
+            or ""
+        )
+
+    # Fallback: check all agent output logs if synthesis had no answer
+    if not final_answer:
+        for agent_id in ("synthesis", "rag"):
+            fb_result = await db.execute(
+                _text("""
+                    SELECT payload FROM agent_logs
+                    WHERE job_id = :job_id
+                      AND agent_id = :agent_id
+                      AND event_type = 'output'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """),
+                {"job_id": str(job_uuid), "agent_id": agent_id},
+            )
+            fb_row = fb_result.fetchone()
+            if fb_row:
+                fb_payload = _json.loads(fb_row[0]) if isinstance(fb_row[0], str) else fb_row[0]
+                final_answer = (
+                    fb_payload.get("output", {}).get("final_answer", "")
+                    or fb_payload.get("output", {}).get("answer", "")
+                    or ""
+                )
+                if final_answer:
+                    break
 
     agent_logs = (
         await db.execute(
@@ -296,6 +325,20 @@ async def get_latest_eval(db: AsyncSession = Depends(get_db)) -> dict:
         },
         "cases": cases,
     }
+
+
+# ── POST /eval/baseline ───────────────────────────────────────────────────────
+
+@app.post("/eval/baseline")
+async def run_baseline_endpoint() -> dict:
+    """
+    Run single-LLM baseline eval (no agents, no RAG, no tools).
+    Scores answer_correctness on all 15 cases.
+    Used to validate multi-agent pipeline complexity is justified.
+    Takes ~45 seconds.
+    """
+    from app.eval.baseline import run_baseline_eval
+    return await run_baseline_eval()
 
 
 # ── POST /eval/rerun ──────────────────────────────────────────────────────────

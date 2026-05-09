@@ -50,19 +50,25 @@ def _update_job_status(job_id: str, status: str) -> None:
 def run_pipeline(self, job_id: str, query: str) -> dict:  # noqa: ANN001
     # Imports are deferred so the Celery worker doesn't instantiate LLM clients
     # at module load time (no ANTHROPIC_API_KEY needed until the task runs).
-    from app.agents.orchestrator import OrchestratorAgent
     from app.schemas.context import SharedContext
-
     from app.streaming import publish_event_sync
 
     _update_job_status(job_id, "running")
     publish_event_sync(job_id, "job_start", {"query": query})
 
     ctx = SharedContext(job_id=job_id, original_query=query)
-    orchestrator = OrchestratorAgent()
+
+    # OrchestratorAgent (and all sub-agent LLM clients) must be created INSIDE
+    # asyncio.run() so their httpx transports are bound to the current event loop.
+    # Creating them outside causes "Event loop is closed" errors when Celery runs
+    # a second task in the same worker process (stale connections from prior loop).
+    async def _run() -> object:
+        from app.agents.orchestrator import OrchestratorAgent
+        orchestrator = OrchestratorAgent()
+        return await orchestrator.run(ctx)
 
     try:
-        result = asyncio.run(orchestrator.run(ctx))
+        result = asyncio.run(_run())
     except Exception as exc:
         log.exception("Pipeline failed for job %s", job_id)
         _update_job_status(job_id, "failed")
