@@ -234,17 +234,67 @@ async def get_trace(
 
 @app.get("/eval/latest")
 async def get_latest_eval(db: AsyncSession = Depends(get_db)) -> dict:
-    eval_run = (
-        await db.execute(
-            select(EvalRun).order_by(EvalRun.triggered_at.desc()).limit(1)
-        )
-    ).scalar_one_or_none()
-    if eval_run is None:
+    result = await db.execute(
+        select(EvalRun).order_by(EvalRun.triggered_at.desc()).limit(1)
+    )
+    run = result.scalar_one_or_none()
+    if not run:
         raise HTTPException(status_code=404, detail="No eval runs found")
+
+    # Per-case data lives in summary["by_category"][cat]["cases"].
+    # Query/answer are in summary["reproducibility_snapshots"][case_id].
+    raw_summary: dict = run.summary or {}
+    snapshots: dict = raw_summary.get("reproducibility_snapshots", {})
+
+    cases = []
+    for cat in ("baseline", "ambiguous", "adversarial"):
+        for c in raw_summary.get("by_category", {}).get(cat, {}).get("cases", []):
+            case_id = c.get("id", "")
+            snap = snapshots.get(case_id, {})
+            dims: dict = c.get("dimensions", {})
+            cases.append({
+                "case_id": case_id,
+                "category": cat,
+                "query": snap.get("original_query", ""),
+                "passed": c.get("passed"),
+                "weighted_score": c.get("score"),
+                "dimension_scores": {k: v.get("score") for k, v in dims.items()},
+                "justifications": {k: v.get("justification", "") for k, v in dims.items()},
+                "answer_snippet": (snap.get("final_answer") or "")[:150],
+            })
+
+    # Recompute aggregates from the flat case list
+    by_category: dict = {}
+    for cat in ("baseline", "ambiguous", "adversarial"):
+        cat_cases = [c for c in cases if c["category"] == cat]
+        if cat_cases:
+            by_category[cat] = {
+                "passed": sum(1 for c in cat_cases if c.get("passed")),
+                "count": len(cat_cases),
+                "avg_score": round(
+                    sum(c.get("weighted_score") or 0 for c in cat_cases)
+                    / len(cat_cases), 3
+                ),
+            }
+
+    total_passed = sum(1 for c in cases if c.get("passed"))
+    overall_avg = (
+        round(sum(c.get("weighted_score") or 0 for c in cases) / len(cases), 3)
+        if cases else 0.0
+    )
+
     return {
-        "eval_run_id": str(eval_run.id),
-        "triggered_at": eval_run.triggered_at.isoformat(),
-        "summary": eval_run.summary,
+        "eval_run_id": str(run.id),
+        "triggered_at": _iso(run.triggered_at),
+        "summary": {
+            "total_cases": len(cases),
+            "total_passed": total_passed,
+            "overall_avg_score": overall_avg,
+            "by_category": by_category,
+            "worst_case_id": raw_summary.get("worst_case_id"),
+            "worst_case_score": raw_summary.get("worst_case_score"),
+        },
+        "cases": cases,
     }
 
 
