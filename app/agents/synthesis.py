@@ -44,7 +44,11 @@ Return ONLY valid JSON:
   ],
   "contradictions_resolved": 0,
   "synthesis_reasoning": "one sentence explaining how you merged the outputs"
-}\
+}
+
+If no agent has provided retrieved context, acknowledge this clearly \
+and provide a direct answer from your own knowledge, clearly marking \
+it as not from retrieved sources. Never return an empty response.\
 """
 
 

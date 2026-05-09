@@ -313,6 +313,15 @@ class OrchestratorAgent(BaseAgent):
 
             results.append(result)
 
+        # Ensure final_answer is always set even if all agents fail
+        if not ctx.final_answer and ctx.agent_outputs:
+            for aid in ("synthesis", "rag", "decomposition"):
+                fa = (ctx.agent_outputs.get(aid, {}).get("final_answer")
+                      or ctx.agent_outputs.get(aid, {}).get("answer"))
+                if fa:
+                    ctx.final_answer = fa
+                    break
+
         latency_ms = int((time.monotonic() - start) * 1000)
         total_tokens = sum(r.tokens_used for r in results)
 
