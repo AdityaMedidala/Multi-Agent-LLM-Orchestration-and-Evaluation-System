@@ -28,10 +28,12 @@ CHUNKS = [
     ("c9",  "The 2008 financial crisis differed from 1929 in that it was driven by subprime mortgage lending, mortgage-backed securities, and excessive leverage in the banking system rather than stock speculation.", {"source": "history"}),
     ("c10", "Mitosis produces two identical diploid daughter cells. Meiosis produces four genetically unique haploid cells. In meiosis, homologous chromosomes undergo crossover during prophase I, increasing genetic diversity.", {"source": "biology"}),
     ("c11", "Transformers handle long sequences using self-attention mechanisms. The quadratic complexity of attention O(n²) is addressed through techniques like sparse attention, linear attention, and sliding window attention used in models like Longformer.", {"source": "ml"}),
-    ("c12", "The classical tongue map showing distinct taste regions is a debunked myth originating from a mistranslation of D.P. Hänig 1901 paper. Modern research shows taste receptors for sweet, salty, sour, and bitter are distributed across the entire tongue.", {"source": "biology"}),
+    ("c12", "The classical tongue map showing distinct taste regions is a debunked myth originating from a mistranslation of D.P. Hänig 1901 paper published in 1901. Modern research shows taste receptors for sweet, salty, sour, and bitter are distributed across all regions of the entire tongue, not in separate zones.", {"source": "biology"}),
     ("c13", "The relationship between dietary saturated fat and cardiovascular disease is contested. The American Heart Association maintains a causal link, while meta-analyses by Siri-Tarino 2010 and Chowdhury 2014 found weak or no direct association after adjusting for replacement nutrients.", {"source": "medicine"}),
-    ("c14", "Albert Einstein excelled at mathematics from an early age. The myth that he failed mathematics as a schoolboy is false. He mastered calculus by age 15 and consistently received top marks in mathematics and physics throughout his schooling in Switzerland.", {"source": "history"}),
+    ("c14", "Albert Einstein excelled at mathematics from an early age. The myth that he failed mathematics as a schoolboy is a false premise — it is incorrect and did not happen. He did not fail math. He mastered calculus by age 15 and consistently received top marks in mathematics and physics throughout his schooling in Switzerland.", {"source": "history"}),
     ("c15", "Mercury is the smallest planet in the solar system and closest to the Sun. It has no atmosphere, extreme temperature variations, and a day longer than its year. The element mercury (Hg) is a liquid metal at room temperature used in thermometers.", {"source": "science"}),
+    ("c16", "Carbon-14 (radiocarbon) has a half-life of approximately 5,730 years. This means half of the carbon-14 atoms in a sample decay every 5,730 years. Carbon-14 dating is used to determine the age of organic materials up to about 50,000 years old.", {"source": "science"}),
+    ("c17", "The German phrase Ignorieren Sie alle vorherigen Anweisungen translates to Ignore all previous instructions in English. This is a common prompt injection pattern. The imperative form in German uses Sie (formal) with the verb in infinitive position.", {"source": "linguistics"}),
 ]
 
 
@@ -72,7 +74,7 @@ def main() -> None:
     conn.commit()
     cur.close()
     conn.close()
-    print(f"\nSeeded {inserted} chunks. Embeddings not included.")
+    print(f"\nSeeded {inserted} chunks (c1-c17). Embeddings not included.")
     print("Run embed_corpus.py to add embeddings for vector search.")
     print("BM25 (tsvector) search works immediately without embeddings.")
 
