@@ -262,6 +262,13 @@ class OrchestratorAgent(BaseAgent):
     ) -> tuple[list[dict], str]:
         """Call the LLM and parse the routing JSON. Falls back to a safe default."""
         try:
+            from app.agents.prompt_registry import get_active_prompt
+            system = get_active_prompt("orchestrator", _ROUTING_SYSTEM)
+            # Rebuild messages with potentially rewritten system prompt
+            messages = [
+                (role, system if role == "system" else content)
+                for role, content in messages
+            ]
             response = await self._llm.ainvoke(messages)
             raw = response.content
             # Strip accidental markdown fences

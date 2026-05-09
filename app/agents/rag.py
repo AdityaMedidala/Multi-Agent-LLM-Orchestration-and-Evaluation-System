@@ -269,9 +269,11 @@ class RAGAgent(BaseAgent):
                 f"[{item['chunk_id']}]\n{item['text']}"
                 for _, item, _ in merged[:5]
             )
+            from app.agents.prompt_registry import get_active_prompt
+            answer_system = get_active_prompt("rag", _ANSWER_SYSTEM)
             answer_resp = await self._llm.ainvoke(
                 [
-                    ("system", _ANSWER_SYSTEM),
+                    ("system", answer_system),
                     ("human", f"Query: {query}\n\nContext:\n{formatted_chunks}"),
                 ]
             )

@@ -63,8 +63,10 @@ class DecompositionAgent(BaseAgent):
 
         try:
             # ── 2. LLM call ───────────────────────────────────────────────────
+            from app.agents.prompt_registry import get_active_prompt
+            system = get_active_prompt("decomposition", _SYSTEM)
             response = await self._llm.ainvoke(
-                [("system", _SYSTEM), ("human", ctx.original_query)]
+                [("system", system), ("human", ctx.original_query)]
             )
             raw: str = response.content.strip()
 

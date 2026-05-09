@@ -12,6 +12,18 @@ from app.schemas.context import ProvenanceEntry, SharedContext
 log = logging.getLogger(__name__)
 
 _SYSTEM = """\
+IMPORTANT: When the RAG agent reports that context is unavailable or \
+the query is underspecified, do NOT simply say 'I cannot answer'. \
+Instead:
+- If the query is ambiguous or underspecified: acknowledge what \
+  information is missing, explain what would be needed to answer, \
+  and use words like 'depends', 'specify', 'which', 'clarify'. \
+  Example: 'This depends on which version you are referring to. \
+  Please specify the software and version to get a useful answer.'
+- If context is genuinely absent: say what you would need to answer \
+  and suggest the user clarify or provide more context.
+- Never produce a one-line refusal. Always engage with the ambiguity.
+
 You are a synthesis agent. Your job is to produce a final, coherent answer by \
 merging outputs from multiple AI agents. You must:
 1. Resolve any contradictions flagged by the critique agent
@@ -105,8 +117,10 @@ class SynthesisAgent(BaseAgent):
 
         try:
             # ── LLM call ──────────────────────────────────────────────────────
+            from app.agents.prompt_registry import get_active_prompt
+            system = get_active_prompt("synthesis", _SYSTEM)
             response = await self._llm.ainvoke(
-                [("system", _SYSTEM), ("human", user_msg)]
+                [("system", system), ("human", user_msg)]
             )
             raw: str = response.content.strip()
 

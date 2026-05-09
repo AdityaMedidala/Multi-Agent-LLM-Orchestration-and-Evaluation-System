@@ -79,9 +79,11 @@ class CritiqueAgent(BaseAgent):
             for aid, out in outputs_to_review.items()
         )
         try:
+            from app.agents.prompt_registry import get_active_prompt
+            system = get_active_prompt("critique", _SYSTEM)
             response = await self._llm.ainvoke(
                 [
-                    ("system", _SYSTEM),
+                    ("system", system),
                     ("human", f"Review these agent outputs:\n{formatted_outputs}"),
                 ]
             )
