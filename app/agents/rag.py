@@ -137,27 +137,26 @@ class RAGAgent(BaseAgent):
         if not fused:
             return fused
         import asyncio as _asyncio
-        # Fresh client per call: avoids stale httpx transport after Celery fork
-        _cohere = cohere.AsyncClient(api_key=settings.cohere_api_key)
-        for _attempt in range(4):  # up to 4 attempts
-            try:
-                response = await _cohere.rerank(
-                    model=RERANK_MODEL,
-                    query=query,
-                    documents=[item["text"] for _, item in fused],
-                    top_n=RERANK_TOP_N,
-                    return_documents=False,
-                )
-                break  # success
-            except cohere.errors.too_many_requests_error.TooManyRequestsError:
-                if _attempt == 3:
-                    raise
-                wait = 6 * (2 ** _attempt)  # 6s, 12s, 24s
-                log.warning(
-                    "Cohere rate-limited, retrying in %ds (attempt %d/4)",
-                    wait, _attempt + 1,
-                )
-                await _asyncio.sleep(wait)
+        async with cohere.AsyncClient(api_key=settings.cohere_api_key) as _cohere:
+            for _attempt in range(4):  # up to 4 attempts
+                try:
+                    response = await _cohere.rerank(
+                        model=RERANK_MODEL,
+                        query=query,
+                        documents=[item["text"] for _, item in fused],
+                        top_n=RERANK_TOP_N,
+                        return_documents=False,
+                    )
+                    break  # success
+                except cohere.errors.too_many_requests_error.TooManyRequestsError:
+                    if _attempt == 3:
+                        raise
+                    wait = 6 * (2 ** _attempt)  # 6s, 12s, 24s
+                    log.warning(
+                        "Cohere rate-limited, retrying in %ds",
+                        wait,
+                    )
+                    await _asyncio.sleep(wait)
         return [(r.relevance_score, fused[r.index][1]) for r in response.results]
 
     # ── Single retrieve + rerank pass ─────────────────────────────────────────
@@ -355,17 +354,38 @@ class RAGAgent(BaseAgent):
             }
 
             # ── 8. Provenance map — one entry per sentence ────────────────────
-            first_chunk_id = citations[0]["chunk_id"] if citations else None
-            for sentence in re.split(r"(?<=[.!?])\s+", answer):
-                sentence = sentence.strip()
-                if sentence:
-                    ctx.provenance_map.append(
-                        ProvenanceEntry(
-                            sentence=sentence,
-                            source_agent="rag",
-                            source_chunk_id=first_chunk_id,
-                        )
-                    )
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", answer) if s.strip()]
+            provenance: list[ProvenanceEntry] = []
+            for sentence in sentences:
+                # Find the citation whose text most closely matches this sentence
+                best_chunk_id = citations[0]["chunk_id"] if citations else None
+                best_score = 0.0
+                for cit in citations:
+                    chunk_text = cit.get("text_snippet", "").lower()
+                    sent_lower = sentence.lower()
+                    # Simple overlap: count shared words
+                    chunk_words = set(chunk_text.split())
+                    sent_words = set(sent_lower.split())
+                    overlap = len(chunk_words & sent_words)
+                    if overlap > best_score:
+                        best_score = overlap
+                        best_chunk_id = cit["chunk_id"]
+                provenance.append(ProvenanceEntry(
+                    sentence=sentence,
+                    source_agent="rag",
+                    source_chunk_id=best_chunk_id,
+                    tool_calls_used=[],
+                ))
+            ctx.provenance_map.extend(provenance)
+            # Store serialised provenance so agent_logs payload carries it
+            ctx.agent_outputs[self.agent_id]["provenance_map"] = [
+                {
+                    "sentence": p.sentence,
+                    "source_agent": p.source_agent,
+                    "source_chunk_id": p.source_chunk_id,
+                }
+                for p in provenance
+            ]
 
             # ── 9. Return result ──────────────────────────────────────────────
             fu_usage = followup_resp.usage_metadata or {}

@@ -222,6 +222,14 @@ async def get_trace(
         )
     ).scalars().all()
 
+    # Extract provenance_map from RAG agent output log
+    provenance_map: list[dict] = []
+    for _log in agent_logs:
+        if _log.agent_id == "rag" and _log.event_type == "output":
+            _lp = _json.loads(_log.payload) if isinstance(_log.payload, str) else _log.payload
+            provenance_map = _lp.get("output", {}).get("provenance_map", [])
+            break
+
     return {
         "job": {
             "job_id": str(job.id),
@@ -231,6 +239,7 @@ async def get_trace(
             "updated_at": _iso(job.updated_at),
             "final_answer": final_answer,
         },
+        "provenance_map": provenance_map,
         "agent_logs": [
             {
                 "id": str(log.id),

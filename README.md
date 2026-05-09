@@ -37,10 +37,10 @@ curl -X POST localhost:8001/jobs \
 ```bash
 curl -N localhost:8001/jobs/j_8f3a2c/stream
 # event: agent_start      data: {"agent":"decomposition","ts":...}
-# event: tool_call        data: {"tool":"web_search","args":{...}}
-# event: claim_flagged    data: {"span":[412,468],"status":"unsupported"}
-# event: agent_end        data: {"agent":"synthesis","tokens_in":2104}
-# event: done             data: {"answer_id":"a_91x"}
+# event: token            data: {"agent":"rag","token":"Binary"}
+# event: agent_done       data: {"agent":"synthesis","tokens":412}
+# event: final_answer     data: {"answer":"Binary search is..."}
+# event: done             data: {}
 ```
 
 **3. Fetch the full execution trace**
@@ -55,8 +55,8 @@ curl localhost:8001/jobs/j_8f3a2c/trace
 
 ```bash
 curl localhost:8001/eval/latest
-# {"run_id":"er_44","cases":15,"weighted_score":0.749,
-#  "by_dimension":{...},"failures":["adv-inj-2","amb-3"]}
+# {"eval_run_id":"...","triggered_at":"...","summary":{"total_passed":13,
+#  "overall_avg_score":0.73,"by_category":{...}},"cases":[...]}
 ```
 
 **5. Approve or reject a proposed prompt rewrite**
@@ -64,7 +64,7 @@ curl localhost:8001/eval/latest
 ```bash
 curl -X POST localhost:8001/prompts/rw_42/review \
   -H 'Content-Type: application/json' \
-  -d '{"decision":"approve","reviewer":"aditya","comment":"clearer span instructions"}'
+  -d '{"decision":"approved"}'
 ```
 
 **6. Re-run eval against a subset of cases**
@@ -72,7 +72,7 @@ curl -X POST localhost:8001/prompts/rw_42/review \
 ```bash
 curl -X POST localhost:8001/eval/rerun \
   -H 'Content-Type: application/json' \
-  -d '{"case_ids":["adv-inj-2","amb-3"]}'
+  -d '{"prompt_rewrite_id":"<rewrite-uuid>"}'
 ```
 
 ---
@@ -111,9 +111,9 @@ The orchestrator does not own a hardcoded edge list. On each job it asks Gemini 
 | Agent | Decision boundary | Key output |
 |---|---|---|
 | **Decomposition** | Decides whether to split the query, how many subqueries, and the hop budget per subquery (1 or 2). Does not retrieve. | `subqueries: List[SubQuery]` with hop targets and dependency edges |
-| **RAG** | Per-subquery hybrid retrieval (BM25 + pgvector) → Cohere rerank-v3.5 → optional 2nd hop seeded by top-k chunks. Owns the evidence pool. Does not summarize. | `evidence: List[Passage]` with chunk IDs, BM25/vector/rerank scores, hop index |
-| **Critique** | Walks the draft answer span by span; classifies each claim as `supported`, `weakly_supported`, or `unsupported` against the evidence pool. Does not rewrite. | `flags: List[ClaimFlag]` with `(start, end, status, evidence_ids)` |
-| **Synthesis** | Composes the final answer, drops or rephrases anything Critique flagged `unsupported`, and emits a provenance map from answer spans back to evidence chunks. | `answer: str`, `provenance: Dict[span → List[evidence_id]]` |
+| **RAG** | Per-subquery hybrid retrieval (BM25 + pgvector) → Cohere rerank-v3.5 → 2nd retrieval hop seeded by top-k chunks. Owns the evidence pool. Does not summarize. | `evidence: List[Passage]` with chunk IDs, BM25/vector/rerank scores, hop index |
+| **Critique** | Walks the draft answer span by span; classifies each claim as `supported`, `weakly_supported`, or `unsupported` against the evidence pool. Does not rewrite. | `claims: List[CritiqueClaim]` with `(claim_text, confidence, disagreement, source_agent, justification)` |
+| **Synthesis** | Composes the final answer, drops or rephrases anything Critique flagged `unsupported`, and emits a provenance map from answer spans back to evidence chunks. | `answer: str`, `provenance_map: List[ProvenanceEntry]` with `(sentence, source_agent, source_chunk_id)` |
 
 Each agent has a per-call token ceiling enforced by the **context budget manager**. Violations are logged to the trace but do not abort the job — see Limitations.
 
@@ -189,7 +189,7 @@ The meta-agent runs after each eval. It reads failed cases, clusters them by (fa
 - It does **not** auto-apply rewrites. Every change requires a human decision on the review endpoint.
 - It does **not** modify retrieval logic, tool implementations, the orchestrator's routing schema, or eval cases — only agent prompts.
 - It does **not** evaluate its own rewrites in-loop. A rewrite's effect is only known after a human approves and the next eval runs.
-- It is **not** unbounded. Per eval run it proposes at most three rewrites, and the prompt-attribution heuristic that picks the "dominant agent" is correlational, not causal (see Limitations).
+- It is **not** unbounded. Per eval run it proposes one rewrite for the worst-performing (agent, dimension) pair, and the prompt-attribution heuristic is correlational, not causal (see Limitations).
 
 Every proposal, decision, and prompt swap is written to an append-only audit table.
 

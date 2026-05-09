@@ -21,12 +21,6 @@ from app.schemas.context import AgentBudget, SharedContext
 
 log = logging.getLogger(__name__)
 
-AGENT_REGISTRY: dict[str, BaseAgent] = {
-    "decomposition": DecompositionAgent(),
-    "rag": RAGAgent(),
-    "critique": CritiqueAgent(),
-    "synthesis": SynthesisAgent(),
-}
 
 _ROUTING_SYSTEM = """\
 You are an orchestration planner for a multi-agent research system.
@@ -234,10 +228,6 @@ class OrchestratorAgent(BaseAgent):
             token_count=0,
         )
 
-        # ── 2b. Enforce subtask dependency order (pre-populated subtasks) ─────
-        # Also applied mid-loop after decomposition runs (see below).
-        routing_plan = self._build_execution_order(ctx, routing_plan)
-
         # ── 2. Execute agents in the decided order ────────────────────────────
         # Use a while loop with an explicit index so that after decomposition
         # populates ctx.subtasks we can splice a re-ordered tail into plan_queue
@@ -248,6 +238,14 @@ class OrchestratorAgent(BaseAgent):
             "synthesis": "synthesize",
             "critique": "critique",
             "decomposition": "decompose",
+        }
+        # Instantiate agents fresh per job so httpx clients are bound
+        # to the current event loop (avoids stale transport after Celery fork)
+        _agent_registry: dict[str, BaseAgent] = {
+            "decomposition": DecompositionAgent(),
+            "rag": RAGAgent(),
+            "critique": CritiqueAgent(),
+            "synthesis": SynthesisAgent(),
         }
         plan_queue = list(routing_plan)
         step_idx = 0
@@ -261,7 +259,7 @@ class OrchestratorAgent(BaseAgent):
 
             ctx.log_routing(f"invoking '{agent_name}': {reason}")
 
-            agent = AGENT_REGISTRY.get(agent_name)
+            agent = _agent_registry.get(agent_name)
             if agent is None:
                 ctx.metadata[f"{agent_name}_error"] = "agent not found in registry"
                 ctx.log_routing(f"SKIPPED '{agent_name}': not in registry")
