@@ -478,3 +478,14 @@ tc_13: needs myth, excelled, false premise — answer says "contradicts
   the claim" and "false myth" — close but not exact keyword match
 tc_14: needs myth, debunked, Hänig, 1901 — answer has myth+debunked
   but missing Hänig and 1901
+### Block 38 — Subtask dependency enforcement
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What was asked:** Implement Kahn's topological sort over ctx.subtasks
+dependency graph. Convert for loop to while loop so plan_queue can be
+spliced mid-execution after decomposition runs. Mark subtask status done
+as agents complete.
+**What was caught:** _build_execution_order called before decomposition
+runs — subtasks empty at that point. Fixed by splicing plan_queue after
+decomposition step completes inside the while loop.
+**Verified:** subtasks=3 with t3 depending on t1+t2, dependency_enforcement
+logged, reordering confirmed.
