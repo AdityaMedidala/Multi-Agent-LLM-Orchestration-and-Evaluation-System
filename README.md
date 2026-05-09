@@ -1,6 +1,6 @@
 # mega-ai
 
-A production multi-agent LLM system built around a four-agent LangGraph pipeline (Decomposition → RAG → Critique → Synthesis), orchestrated by an LLM-generated JSON routing plan rather than hardcoded edges. The system answers research-style queries with span-level claim provenance, ships with a 15-case adversarial eval harness scored across six dimensions, and includes a meta-agent that proposes prompt rewrites for failing cases — gated behind explicit human approval. Stack: FastAPI, LangGraph, Claude Haiku, OpenAI embeddings, Cohere rerank, pgvector, PostgreSQL, Redis, Celery, Docker Compose.
+A production multi-agent LLM system built around a four-agent async pipeline (Decomposition → RAG → Critique → Synthesis), orchestrated by an LLM-generated JSON routing plan rather than hardcoded edges. The system answers research-style queries with span-level claim provenance, ships with a 15-case adversarial eval harness scored across six dimensions, and includes a meta-agent that proposes prompt rewrites for failing cases — gated behind explicit human approval. Stack: FastAPI, Gemini 2.0 Flash (gemini-2.0-flash), OpenAI embeddings, Cohere rerank, pgvector, PostgreSQL, Redis, Celery, Docker Compose.
 
 ---
 
@@ -8,18 +8,18 @@ A production multi-agent LLM system built around a four-agent LangGraph pipeline
 
 ```bash
 git clone <repo> && cd mega-ai
-cp .env.example .env   # fill in ANTHROPIC_API_KEY, OPENAI_API_KEY, COHERE_API_KEY
+cp .env.example .env   # fill in GOOGLE_API_KEY, OPENAI_API_KEY, COHERE_API_KEY
 docker compose up
 ```
 
-This brings up four services — `api`, `worker`, `postgres`, `redis` — with no manual migrations or seeding. The API listens on `localhost:8000`. First boot ingests a small demo corpus into pgvector (~30s).
+This brings up four services — `api`, `worker`, `postgres`, `redis` — with no manual migrations or seeding. The API listens on `localhost:8001`. First boot ingests a small demo corpus into pgvector (~30s).
 
 ### Endpoint walkthrough
 
 **1. Submit a query**
 
 ```bash
-curl -X POST localhost:8000/jobs \
+curl -X POST localhost:8001/jobs \
   -H 'Content-Type: application/json' \
   -d '{"query": "Compare inference energy use of GPT-4 and Llama 3 70B, with sources."}'
 # → {"job_id": "j_8f3a2c"}
@@ -28,7 +28,7 @@ curl -X POST localhost:8000/jobs \
 **2. Stream live agent activity (SSE)**
 
 ```bash
-curl -N localhost:8000/jobs/j_8f3a2c/stream
+curl -N localhost:8001/jobs/j_8f3a2c/stream
 # event: agent_start      data: {"agent":"decomposition","ts":...}
 # event: tool_call        data: {"tool":"web_search","args":{...}}
 # event: claim_flagged    data: {"span":[412,468],"status":"unsupported"}
@@ -39,7 +39,7 @@ curl -N localhost:8000/jobs/j_8f3a2c/stream
 **3. Fetch the full execution trace**
 
 ```bash
-curl localhost:8000/jobs/j_8f3a2c/trace
+curl localhost:8001/jobs/j_8f3a2c/trace
 # Full DAG: per-agent inputs/outputs, tool calls, token usage,
 # routing-plan JSON, retrieval scores, critique flags, provenance map.
 ```
@@ -47,7 +47,7 @@ curl localhost:8000/jobs/j_8f3a2c/trace
 **4. Latest eval summary**
 
 ```bash
-curl localhost:8000/eval/latest
+curl localhost:8001/eval/latest
 # {"run_id":"er_44","cases":15,"weighted_score":0.71,
 #  "by_dimension":{...},"failures":["adv-inj-2","amb-3"]}
 ```
@@ -55,7 +55,7 @@ curl localhost:8000/eval/latest
 **5. Approve or reject a proposed prompt rewrite**
 
 ```bash
-curl -X POST localhost:8000/prompts/rw_42/review \
+curl -X POST localhost:8001/prompts/rw_42/review \
   -H 'Content-Type: application/json' \
   -d '{"decision":"approve","reviewer":"aditya","comment":"clearer span instructions"}'
 ```
@@ -63,7 +63,7 @@ curl -X POST localhost:8000/prompts/rw_42/review \
 **6. Re-run eval against a subset of cases**
 
 ```bash
-curl -X POST localhost:8000/eval/rerun \
+curl -X POST localhost:8001/eval/rerun \
   -H 'Content-Type: application/json' \
   -d '{"case_ids":["adv-inj-2","amb-3"]}'
 ```
@@ -73,7 +73,7 @@ curl -X POST localhost:8000/eval/rerun \
 ## Architecture
 
 ```
-  client ──POST /jobs──► FastAPI ──► Celery ──► Orchestrator (Haiku → JSON plan)
+  client ──POST /jobs──► FastAPI ──► Celery ──► Orchestrator (Gemini 2.0 Flash → JSON plan)
     ▲                                                  │
     │                                                  │ executes plan; agents run per route
     │                                                  ▼
@@ -95,7 +95,7 @@ curl -X POST localhost:8000/eval/rerun \
         /jobs/{id}/stream       └───────────────┘
 ```
 
-The orchestrator does not own a hardcoded edge list. On each job it asks Haiku for a routing plan — a JSON object specifying agent order, optional re-entries (e.g. RAG → Critique → RAG), and per-agent tool whitelists. The plan is validated against a schema before execution; invalid plans fall back to the canonical D → R → C → S order. The shared context is a typed Pydantic object passed by reference between LangGraph nodes; every read and write is captured in `events` and emitted to Redis pub/sub, which the SSE endpoint tails.
+The orchestrator does not own a hardcoded edge list. On each job it asks Gemini 2.0 Flash for a routing plan — a JSON object specifying agent order, optional re-entries (e.g. RAG → Critique → RAG), and per-agent tool whitelists. The plan is validated against a schema before execution; invalid plans fall back to the canonical D → R → C → S order. The shared context is a typed Pydantic object passed by reference between agents; every read and write is captured in `events` and emitted to Redis pub/sub, which the SSE endpoint tails.
 
 ---
 
@@ -116,9 +116,9 @@ Each agent has a per-call token ceiling enforced by the **context budget manager
 
 | Tool | What it does | Failure modes |
 |---|---|---|
-| **web_search** | DuckDuckGo HTML endpoint with `tenacity` exponential backoff and jitter | DDG rate-limits aggressively; HTML structure drifts; no fallback search provider |
+| **web_search** | ddgs library with bot-challenge handling. Falls back gracefully on rate-limit or empty results. | DDG may still rate-limit from datacenter IPs; no fallback search provider |
 | **code_executor** | Runs Python snippets in a subprocess with resource limits and no network | Subprocess isolation is not a real security boundary; long-running code is killed by wall-clock timeout; no GPU |
-| **data_lookup** | Natural-language → SQL via Haiku against PostgreSQL, SELECT-only allowlist, schema injected into prompt | Hallucinated columns on tables not in the prompt; ambiguous joins; no query-planner feedback loop |
+| **data_lookup** | Natural-language → SQL via Gemini 2.0 Flash against PostgreSQL, SELECT-only allowlist, schema injected into prompt | Hallucinated columns on tables not in the prompt; ambiguous joins; no query-planner feedback loop |
 | **self_reflection** | Cross-evidence contradiction check; compares numeric and categorical claims pairwise across retrieved passages | False positives on near-paraphrases; misses contradictions when claims are split across non-overlapping spans |
 
 Tool selection is gated by the orchestrator's routing plan — agents cannot invoke tools outside their per-job whitelist.
@@ -137,14 +137,14 @@ Tool selection is gated by the orchestrator's routing plan — agents cannot inv
 
 | Dimension | Weight | What it measures |
 |---|---|---|
-| `answer_correctness` | 0.30 | Factual alignment with ground truth, judged by an LLM grader against a reference answer + rubric |
-| `citation_accuracy` | 0.20 | Fraction of claims with provenance entries that actually support them on re-check |
-| `contradiction_resolution` | 0.15 | Whether contradictions in the evidence pool are surfaced rather than silently resolved |
+| `answer_correctness` | 0.35 | Keyword presence scoring with category-specific weights (baseline 1.0×, ambiguous 0.5×, adversarial 0.5×). No-keyword hits trigger hard fail on adversarial cases. |
+| `citation_accuracy` | 0.15 | Fraction of provenance map entries with a non-null source_chunk_id. Measures citation presence, not validity. |
+| `contradiction_resolution` | 0.20 | Whether contradictions in the evidence pool are surfaced rather than silently resolved |
 | `tool_efficiency` | 0.10 | Tool calls used vs. minimum needed for the case; penalizes redundant retries |
 | `budget_compliance` | 0.10 | Per-agent token ceilings respected |
-| `critique_agreement` | 0.15 | Critique's flags vs. an offline gold-standard re-grading of the same spans |
+| `critique_agreement` | 0.10 | Self-reported overall_agreement_rate from the critique agent across all claims it reviewed. |
 
-Weights sum to 1.00 and live in `eval/weights.yaml` — they are configurable per run.
+Weights sum to 1.00.
 
 ### Adversarial scoring differences
 
@@ -180,6 +180,8 @@ These are real, not theatrical.
 5. **Budget violations are logged, not preempted.** The context budget manager observes token usage after each agent call. An agent that issues a single oversized LLM call still completes the call before the violation is recorded.
 6. **SSE has no resume.** A client that disconnects mid-job cannot reattach to the live stream — they must poll `/jobs/{id}/trace` after completion. There is no partial-trace endpoint.
 7. **NL→SQL has no planner feedback.** When `data_lookup` produces a wrong query, the failure surfaces as a bad answer rather than a diagnostic — there's no loop that feeds `EXPLAIN` or empty-result-set signals back into the LLM.
+8. **The self-improving loop audits and stores rewrite proposals but does not currently hot-load approved prompts into running agents.** Re-evals after approval run with original prompts; delta will be zero. Fixing this requires a prompt registry that agents load at call time.
+9. **The document_chunks corpus is seeded via scripts/seed_corpus.py (run after docker compose up).** The RAG agent falls back to web search for queries with no corpus match.
 
 ---
 
@@ -195,15 +197,3 @@ These are real, not theatrical.
 ## AI usage
 
 AI assistants were used throughout. See `AI_USAGE.md` for a full per-block attestation of what was generated, reviewed, and changed.
-
-8. **Eval scores reflect corpus size, not pipeline correctness.** The demo
-   corpus has 7 chunks covering algorithms, networking, and biology basics.
-   15 of the eval test cases cover topics outside this corpus — RAG correctly
-   reports "no context" rather than hallucinating, which scores zero on
-   answer_correctness. A production corpus would cover the test domains.
-
-8. **Eval scores reflect corpus size, not pipeline correctness.** The demo
-   corpus has 7 chunks covering algorithms, networking, and biology basics.
-   15 of the eval test cases cover topics outside this corpus — RAG correctly
-   reports "no context" rather than hallucinating, which scores zero on
-   answer_correctness. A production corpus would cover the test domains.
