@@ -83,7 +83,15 @@ def run_pipeline(self, job_id: str, query: str) -> dict:  # noqa: ANN001
     finally:
         conn.close()
 
-    publish_event_sync(job_id, "final_answer", {"answer": ctx.final_answer or ""})
+    # Read final_answer from synthesis output (ctx.final_answer may be empty
+    # if synthesis stores to ctx.agent_outputs instead of ctx.final_answer)
+    _final = (
+        ctx.final_answer
+        or ctx.agent_outputs.get("synthesis", {}).get("final_answer", "")
+        or ctx.agent_outputs.get("synthesis", {}).get("answer", "")
+        or ""
+    )
+    publish_event_sync(job_id, "final_answer", {"answer": _final})
     publish_event_sync(job_id, "done", {})
 
     return {"job_id": job_id, "status": "done"}
