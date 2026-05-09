@@ -157,6 +157,26 @@ async def get_trace(
             },
         )
 
+    # Read final_answer from synthesis agent_log output
+    import json as _json
+    from sqlalchemy import text as _text
+    fa_result = await db.execute(
+        _text("""
+            SELECT payload FROM agent_logs
+            WHERE job_id = :job_id
+              AND agent_id = 'synthesis'
+              AND event_type = 'output'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """),
+        {"job_id": str(job_uuid)},
+    )
+    fa_row = fa_result.fetchone()
+    final_answer = ""
+    if fa_row:
+        fa_payload = _json.loads(fa_row[0]) if isinstance(fa_row[0], str) else fa_row[0]
+        final_answer = fa_payload.get("output", {}).get("final_answer", "")
+
     agent_logs = (
         await db.execute(
             select(AgentLog)
@@ -180,6 +200,7 @@ async def get_trace(
             "status": job.status,
             "created_at": _iso(job.created_at),
             "updated_at": _iso(job.updated_at),
+            "final_answer": final_answer,
         },
         "agent_logs": [
             {

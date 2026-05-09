@@ -48,10 +48,8 @@ class RAGAgent(BaseAgent):
         except Exception:
             self._openai = None  # type: ignore[assignment]
 
-        try:
-            self._cohere = cohere.AsyncClient(api_key=settings.cohere_api_key)
-        except Exception:
-            self._cohere = None  # type: ignore[assignment]
+        # Cohere client is created per-call in _rerank() to avoid stale async
+        # transport state after Celery ForkPoolWorker forks the process.
 
         self._llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
 
@@ -138,7 +136,9 @@ class RAGAgent(BaseAgent):
     ) -> list[tuple[float, dict]]:
         if not fused:
             return fused
-        response = await self._cohere.rerank(
+        # Fresh client per call: avoids stale httpx transport after Celery fork
+        _cohere = cohere.AsyncClient(api_key=settings.cohere_api_key)
+        response = await _cohere.rerank(
             model=RERANK_MODEL,
             query=query,
             documents=[item["text"] for _, item in fused],

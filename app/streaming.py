@@ -56,12 +56,16 @@ async def token_stream(job_id: str, timeout_seconds: int = 120):
 
 
 def publish_event_sync(job_id: str, event_type: str, data: dict) -> None:
-    """Sync wrapper for use in Celery tasks."""
+    """Sync wrapper for use in Celery tasks (no running event loop)."""
     try:
-        loop = asyncio.get_running_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        loop.run_until_complete(publish_event(job_id, event_type, data))
-    except Exception:
-        pass  # non-fatal
+        # Always create a fresh event loop — Celery tasks are sync
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(publish_event(job_id, event_type, data))
+        finally:
+            loop.close()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "publish_event_sync failed: %s", exc
+        )
