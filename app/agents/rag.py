@@ -172,6 +172,7 @@ class RAGAgent(BaseAgent):
         self, query: str, ctx: SharedContext, max_attempts: int = 3
     ) -> list[tuple[float, dict]]:
         from app.tools.web_search import web_search as _web_search  # deferred to avoid circular import
+        from app.agents.tool_persistence import _persist_tool_call
 
         # Query variations for retries
         query_variants = [
@@ -184,6 +185,7 @@ class RAGAgent(BaseAgent):
             start_t = time.monotonic()
             tool_result = await _web_search(q, max_results=5)
             latency = int((time.monotonic() - start_t) * 1000)
+            accepted = tool_result.success and bool(tool_result.output.get("results"))
 
             # Log each attempt separately (spec requirement)
             ctx.tool_call_log.append(ToolCallRecord(
@@ -192,11 +194,20 @@ class RAGAgent(BaseAgent):
                 input={"query": q},
                 output=tool_result.output if tool_result.success else {},
                 latency_ms=latency,
-                accepted=tool_result.success and bool(
-                    tool_result.output.get("results")
-                ),
+                accepted=accepted,
                 failure_reason=tool_result.failure_reason,
             ))
+            await _persist_tool_call(
+                job_id=ctx.job_id,
+                tool_name="web_search",
+                agent_id="rag",
+                attempt=attempt,
+                input_payload={"query": q},
+                output_payload=tool_result.output if tool_result.success else {},
+                latency_ms=latency,
+                accepted=accepted,
+                failure_reason=tool_result.failure_reason,
+            )
 
             # Agent evaluates result sufficiency
             if tool_result.success and tool_result.output.get("results"):

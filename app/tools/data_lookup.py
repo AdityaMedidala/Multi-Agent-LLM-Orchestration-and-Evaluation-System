@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 
 import psycopg2
 import psycopg2.extras
@@ -9,6 +10,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.config import settings
 from app.tools.registry import ToolResult
+
+log = logging.getLogger(__name__)
 
 _SYSTEM = """\
 You are a SQL assistant. Convert natural language queries to SQL.
@@ -40,7 +43,8 @@ async def data_lookup(natural_language_query: str) -> ToolResult:
             [("system", _SYSTEM), ("human", natural_language_query)]
         )
         sql = response.content.strip()
-    except Exception:
+    except Exception as exc:
+        log.warning("data_lookup: LLM call failed: %s", exc)
         return ToolResult(
             tool_name="data_lookup",
             success=False,
@@ -49,12 +53,22 @@ async def data_lookup(natural_language_query: str) -> ToolResult:
             failure_reason="timeout",
         )
 
+    # ── 1a. Strip markdown code fences the LLM may add ───────────────────────
+    if sql.startswith("```"):
+        lines = sql.split("\n")
+        # Drop the opening fence line (```sql or ```) and the closing ``` line
+        inner = [l for l in lines[1:] if l.strip() != "```"]
+        sql = "\n".join(inner).strip()
+
+    log.debug("data_lookup: generated SQL: %s", sql)
+
     # ── 2. Validate it's a SELECT ─────────────────────────────────────────────
     if not sql.upper().lstrip().startswith("SELECT"):
+        log.warning("data_lookup: non-SELECT SQL rejected: %.120s", sql)
         return ToolResult(
             tool_name="data_lookup",
             success=False,
-            output={},
+            output={"sql": sql},
             latency_ms=0,
             failure_reason="malformed",
         )
@@ -63,11 +77,12 @@ async def data_lookup(natural_language_query: str) -> ToolResult:
     loop = asyncio.get_running_loop()
     try:
         rows = await loop.run_in_executor(None, functools.partial(_run_query, sql))
-    except Exception:
+    except Exception as exc:
+        log.warning("data_lookup: query execution failed: %s | sql: %s", exc, sql)
         return ToolResult(
             tool_name="data_lookup",
             success=False,
-            output={},
+            output={"sql": sql},
             latency_ms=0,
             failure_reason="timeout",
         )

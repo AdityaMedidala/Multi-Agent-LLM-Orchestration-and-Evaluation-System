@@ -8,26 +8,24 @@ import redis.asyncio as aioredis
 from app.config import settings
 
 
-_redis_pool: aioredis.ConnectionPool | None = None
-
-
-def _get_pool() -> aioredis.ConnectionPool:
-    global _redis_pool
-    if _redis_pool is None:
-        _redis_pool = aioredis.ConnectionPool.from_url(settings.redis_url)
-    return _redis_pool
-
-
 def _channel(job_id: str) -> str:
     return f"job:{job_id}:stream"
 
 
 async def publish_event(job_id: str, event_type: str, data: dict) -> None:
-    """Publish one SSE event to Redis pub/sub. Fire and forget."""
-    r = aioredis.Redis(connection_pool=_get_pool())
-    payload = json.dumps({"event": event_type, "data": data})
-    await r.publish(_channel(job_id), payload)
-    # No close — pool manages connections
+    """Publish one SSE event to Redis pub/sub.
+
+    Creates a fresh connection per call so that Celery tasks running under
+    asyncio.run() (each with its own event loop) never hit the
+    'Future attached to a different loop' error that a cached module-level
+    ConnectionPool would cause.
+    """
+    r = aioredis.from_url(settings.redis_url)
+    try:
+        payload = json.dumps({"event": event_type, "data": data})
+        await r.publish(_channel(job_id), payload)
+    finally:
+        await r.aclose()
 
 
 async def token_stream(job_id: str, timeout_seconds: int = 120):

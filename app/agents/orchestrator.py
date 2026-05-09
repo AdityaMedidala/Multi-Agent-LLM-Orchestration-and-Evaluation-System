@@ -30,7 +30,7 @@ AGENT_REGISTRY: dict[str, BaseAgent] = {
 
 _ROUTING_SYSTEM = """\
 You are an orchestration planner for a multi-agent research system.
-Given a user query, decide which agents to invoke and in what order.
+Given a user query, decide which agents and tools to invoke and in what order.
 
 Available agents:
 - decomposition: breaks the query into structured sub-tasks
@@ -38,10 +38,20 @@ Available agents:
 - critique: fact-checks and flags unsupported claims
 - synthesis: assembles a final, coherent answer
 
+Available tools (included in the routing plan exactly like agents):
+- data_lookup: executes a structured database query against the system's own
+  tables (jobs, agent_logs, tool_calls); use this when the query contains
+  counting, listing, or aggregation language such as "how many", "list all",
+  "count", "which jobs", "what runs", "show records", or any request for
+  statistics or records from the system database
+
+Tool steps execute before agent steps. Place data_lookup early in the plan
+whenever the query clearly requests database statistics or record listings.
+
 Return ONLY valid JSON in this exact shape — no prose, no markdown:
 {
   "routing_plan": [
-    {"agent": "<agent_name>", "reason": "<one sentence>", "budget_tokens": <int>},
+    {"agent": "<agent_name_or_tool_name>", "reason": "<one sentence>", "budget_tokens": <int>},
     ...
   ],
   "orchestrator_reasoning": "<one sentence explaining the overall plan>"
@@ -158,6 +168,60 @@ class OrchestratorAgent(BaseAgent):
             "agent": self.agent_id, "tokens": 0
         })
         ctx.log_routing(f"orchestrator_reasoning: {overall_reasoning}")
+
+        # ── 2a. Execute data_lookup tool steps before agent steps ─────────────
+        from app.tools.registry import call_tool
+        from app.schemas.context import ToolCallRecord
+        from app.agents.tool_persistence import _persist_tool_call
+        tool_steps = [s for s in routing_plan if s["agent"] == "data_lookup"]
+        routing_plan = [s for s in routing_plan if s["agent"] != "data_lookup"]
+        for tool_step in tool_steps:
+            reason = tool_step.get("reason", "")
+            ctx.log_routing(f"invoking tool 'data_lookup': {reason}")
+            t0 = time.monotonic()
+            tool_result = await call_tool(
+                "data_lookup",
+                {"natural_language_query": ctx.original_query},
+            )
+            latency = int((time.monotonic() - t0) * 1000)
+            ctx.tool_call_log.append(
+                ToolCallRecord(
+                    tool_name="data_lookup",
+                    attempt=1,
+                    input={"natural_language_query": ctx.original_query},
+                    output=tool_result.output,
+                    latency_ms=latency,
+                    accepted=tool_result.success,
+                    failure_reason=tool_result.failure_reason,
+                )
+            )
+            await _persist_tool_call(
+                job_id=ctx.job_id,
+                tool_name="data_lookup",
+                agent_id="orchestrator",
+                attempt=1,
+                input_payload={"natural_language_query": ctx.original_query},
+                output_payload=tool_result.output,
+                latency_ms=latency,
+                accepted=tool_result.success,
+                failure_reason=tool_result.failure_reason,
+            )
+            if tool_result.success:
+                ctx.metadata["data_lookup_results"] = tool_result.output
+                ctx.log_routing(
+                    f"data_lookup returned {tool_result.output.get('row_count', 0)} rows"
+                )
+            else:
+                ctx.log_routing(f"data_lookup failed: {tool_result.failure_reason}")
+            await _log_agent_event(
+                job_id=ctx.job_id,
+                agent_id="data_lookup",
+                event_type="tool_result",
+                input_payload={"natural_language_query": ctx.original_query},
+                output_payload=tool_result.output,
+                latency_ms=latency,
+                token_count=0,
+            )
 
         # Log the orchestrator's own routing decision
         await _log_agent_event(

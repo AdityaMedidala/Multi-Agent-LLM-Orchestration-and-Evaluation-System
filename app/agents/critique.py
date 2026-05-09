@@ -7,7 +7,7 @@ import time
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.agents.base import AgentResult, BaseAgent
-from app.schemas.context import CritiqueClaim, SharedContext
+from app.schemas.context import CritiqueClaim, SharedContext, ToolCallRecord
 
 log = logging.getLogger(__name__)
 
@@ -73,11 +73,51 @@ class CritiqueAgent(BaseAgent):
                 error="no_outputs_to_review",
             )
 
-        # ── 3. Single LLM call ────────────────────────────────────────────────
+        # ── 3. Self-reflection: detect intra-agent contradictions ────────────
+        from app.tools.registry import call_tool
+        from app.agents.tool_persistence import _persist_tool_call
+        contradictions_summary: list[dict] = []
+        _ctx_dict = {"agent_outputs": ctx.agent_outputs}
+        for _aid in list(outputs_to_review.keys()):
+            _sr = await call_tool(
+                "self_reflection",
+                {"job_id": ctx.job_id, "agent_id": _aid, "ctx_dict": _ctx_dict},
+            )
+            ctx.tool_call_log.append(
+                ToolCallRecord(
+                    tool_name="self_reflection",
+                    attempt=1,
+                    input={"job_id": ctx.job_id, "agent_id": _aid},
+                    output=_sr.output,
+                    latency_ms=_sr.latency_ms,
+                    accepted=_sr.success,
+                    failure_reason=_sr.failure_reason,
+                )
+            )
+            await _persist_tool_call(
+                job_id=ctx.job_id,
+                tool_name="self_reflection",
+                agent_id="critique",
+                attempt=1,
+                input_payload={"job_id": ctx.job_id, "agent_id": _aid},
+                output_payload=_sr.output,
+                latency_ms=_sr.latency_ms,
+                accepted=_sr.success,
+                failure_reason=_sr.failure_reason,
+            )
+            if _sr.success:
+                contradictions_summary.extend(_sr.output.get("contradictions", []))
+
+        # ── 4. Single LLM call ────────────────────────────────────────────────
         formatted_outputs = "\n\n---\n".join(
             f"Agent: {aid}\nOutput: {json.dumps(out)[:1000]}"
             for aid, out in outputs_to_review.items()
         )
+        if contradictions_summary:
+            formatted_outputs += (
+                "\n\n---\nSelf-reflection detected these contradictions:\n"
+                + json.dumps(contradictions_summary, indent=2)
+            )
         try:
             from app.agents.prompt_registry import get_active_prompt
             from app.streaming import publish_event
