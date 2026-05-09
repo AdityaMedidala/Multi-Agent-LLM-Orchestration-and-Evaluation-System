@@ -12,7 +12,14 @@ cp .env.example .env   # fill in GOOGLE_API_KEY, OPENAI_API_KEY, COHERE_API_KEY
 docker compose up
 ```
 
-This brings up four services — `api`, `worker`, `postgres`, `redis` — with no manual migrations or seeding. The API listens on `localhost:8001`. First boot ingests a small demo corpus into pgvector (~30s).
+This brings up four services — `api`, `worker`, `postgres`, `redis` — with no manual migrations or seeding. The API listens on `localhost:8001`. After `docker compose up`, run the corpus seed:
+
+```bash
+docker compose exec api uv run python scripts/seed_corpus.py
+docker compose exec api uv run python scripts/embed_corpus.py
+```
+
+A log query interface is available at http://localhost:8080 (Adminer — server: postgres, user: mega, password: mega, database: megaai).
 
 ### Endpoint walkthrough
 
