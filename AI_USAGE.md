@@ -489,3 +489,18 @@ runs — subtasks empty at that point. Fixed by splicing plan_queue after
 decomposition step completes inside the while loop.
 **Verified:** subtasks=3 with t3 depending on t1+t2, dependency_enforcement
 logged, reordering confirmed.
+
+### Block 39 — Critical bug fixes from review 4
+**Tool:** Claude Sonnet 4.6 (claude.ai)
+**What was asked:** Fix 5 issues from dashboard review:
+1. AGENT_REGISTRY module-level singleton causing stale httpx on Celery fork
+2. Cohere AsyncClient connection leak (no aclose)
+3. All provenance sentences stamped with first chunk only
+4. Dead _build_execution_order call before decomposition runs
+5. 8 README inaccuracies (SSE shape, endpoint contracts, output types)
+**What was caught:** Provenance fix needed provenance_map surfaced in
+trace endpoint and stored in agent_outputs — added to both rag.py and
+main.py.
+**Verified:** Two back-to-back jobs both complete (event loop fix).
+Distinct chunks ['c6','c1'] in provenance (attribution fix). Eval
+unchanged at 13/15.
