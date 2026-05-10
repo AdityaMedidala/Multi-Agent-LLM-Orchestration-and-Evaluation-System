@@ -4,41 +4,40 @@ A production multi-agent LLM system built around a four-agent async pipeline (De
 
 ---
 
-## Quick start
+## Quick Start
+
+Designed for zero-friction setup. No manual database migrations, no external corpus seeding scripts, and no complex dependency trees. 
+
+**Prerequisites:** Docker, Docker Compose, and three API keys (Google, OpenAI, Cohere).
 
 ```bash
+# 1. Clone and configure keys
 git clone <repo> && cd mega-ai
-cp .env.example .env   # fill in GOOGLE_API_KEY, OPENAI_API_KEY, COHERE_API_KEY
-docker compose up
+cp .env.example .env
+
+# 2. Boot the system
+# Automatically runs migrations, seeds the vector DB, and generates embeddings
+docker compose up -d
+
+# 3. Submit a query
+curl -X POST http://localhost:8001/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is the time complexity of binary search and why?"}'
+
+# 4. Stream the execution live (buffered, so late subscribers miss nothing)
+curl -N http://localhost:8001/jobs/<uuid>/stream
 ```
 
-This brings up five services — `api`, `worker`, `postgres`, `redis`, `adminer` — with no manual migrations or seeding. The API listens on `localhost:8001`. After `docker compose up`, run the corpus seed:
+*(Or open `client/demo.html` in a browser for a terminal-style UI).*
+
+### Testing
+The project includes a 91-case `pytest` suite verifying the structural integrity of the pipeline (Pydantic schema validation, budget enforcement, 6-dimensional eval scoring logic, and AST-blocking rules for the code sandbox).
 
 ```bash
-docker compose exec api uv run python scripts/seed_corpus.py
-docker compose exec api uv run python scripts/embed_corpus.py
+uv run pytest tests/ -v
 ```
 
-A log query interface is available at http://localhost:8080 (Adminer — server: postgres, user: mega, password: mega, database: megaai).
-
-### Endpoint walkthrough
-
-**1. Submit a query**
-
 ```bash
-curl -X POST localhost:8001/jobs \
-  -H 'Content-Type: application/json' \
-  -d '{"query": "Compare inference energy use of GPT-4 and Llama 3 70B, with sources."}'
-# → {"job_id": "j_8f3a2c"}
-```
-
-**2. Stream live agent activity (SSE)**
-
-```bash
-curl -N localhost:8001/jobs/j_8f3a2c/stream
-# event: agent_start      data: {"agent":"decomposition","ts":...}
-# event: token            data: {"agent":"rag","token":"Binary"}
-# event: agent_done       data: {"agent":"synthesis","tokens":412}
 # event: final_answer     data: {"answer":"Binary search is..."}
 # event: done             data: {}
 ```
