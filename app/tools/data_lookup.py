@@ -4,12 +4,15 @@ import asyncio
 import functools
 import logging
 
-import psycopg2
 import psycopg2.extras
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from app.config import settings
-from app.tools.registry import ToolResult
+from app.db.sync_pool import get_conn, put_conn
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.tools.registry import ToolResult
 
 log = logging.getLogger(__name__)
 
@@ -25,16 +28,18 @@ Instruction: Return ONLY a valid SQL SELECT statement, nothing else.\
 
 
 def _run_query(sql: str) -> list[dict]:
-    conn = psycopg2.connect(settings.database_url_sync)
+    """Execute sql using a connection from the shared pool (not a fresh connect)."""
+    conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql)
             return [dict(row) for row in cur.fetchall()]
     finally:
-        conn.close()
+        put_conn(conn)
 
 
 async def data_lookup(natural_language_query: str) -> ToolResult:
+    from app.tools.registry import ToolResult
     llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
 
     # ── 1. NL → SQL via LLM ──────────────────────────────────────────────────
@@ -53,10 +58,9 @@ async def data_lookup(natural_language_query: str) -> ToolResult:
             failure_reason="llm_error",
         )
 
-    # ── 1a. Strip markdown code fences the LLM may add ───────────────────────
+    # ── 1a. Strip markdown code fences ───────────────────────────────────────
     if sql.startswith("```"):
         lines = sql.split("\n")
-        # Drop the opening fence line (```sql or ```) and the closing ``` line
         inner = [l for l in lines[1:] if l.strip() != "```"]
         sql = "\n".join(inner).strip()
 
@@ -73,7 +77,7 @@ async def data_lookup(natural_language_query: str) -> ToolResult:
             failure_reason="malformed",
         )
 
-    # ── 3. Execute against Postgres (sync driver in executor) ─────────────────
+    # ── 3. Execute against Postgres via pool ──────────────────────────────────
     loop = asyncio.get_running_loop()
     try:
         rows = await loop.run_in_executor(None, functools.partial(_run_query, sql))

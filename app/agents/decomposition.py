@@ -6,7 +6,7 @@ import time
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from app.agents.base import AgentResult, BaseAgent
+from app.agents.base import AgentResult, BaseAgent, count_tokens
 from app.schemas.context import SharedContext, SubTask
 
 log = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ class DecompositionAgent(BaseAgent):
     async def run(self, ctx: SharedContext) -> AgentResult:
         start = time.monotonic()
 
-        # ── 1. Budget check ───────────────────────────────────────────────────
+        # ── 1. Budget check (pre-flight estimate) ─────────────────────────────
         if not self._check_budget(ctx, 500):
             return AgentResult(
                 agent_id=self.agent_id,
@@ -79,12 +79,17 @@ class DecompositionAgent(BaseAgent):
                     await publish_event(ctx.job_id, "token", {
                         "agent": self.agent_id, "token": token
                     })
-            await publish_event(ctx.job_id, "agent_done", {
-                "agent": self.agent_id, "tokens": len(raw)
-            })
             raw = raw.strip()
 
-            # ── 3. Parse JSON (strip markdown fences if present) ──────────────
+            # ── 3. Actual token count (tiktoken, not word-split) ──────────────
+            tokens_used = count_tokens(system + ctx.original_query + raw)
+            self._update_budget_actual(ctx, tokens_used)
+
+            await publish_event(ctx.job_id, "agent_done", {
+                "agent": self.agent_id, "tokens": tokens_used
+            })
+
+            # ── 4. Parse JSON (strip markdown fences if present) ──────────────
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
@@ -94,7 +99,7 @@ class DecompositionAgent(BaseAgent):
             subtask_dicts: list[dict] = data.get("subtasks", [])
             reasoning: str = data.get("decomposition_reasoning", "")
 
-            # ── 4. Validate dependencies ──────────────────────────────────────
+            # ── 5. Validate dependencies ──────────────────────────────────────
             known_ids = {s["task_id"] for s in subtask_dicts}
             for s in subtask_dicts:
                 bad = [d for d in s.get("dependencies", []) if d not in known_ids]
@@ -108,18 +113,16 @@ class DecompositionAgent(BaseAgent):
                         d for d in s["dependencies"] if d in known_ids
                     ]
 
-            # ── 5. Materialise SubTask objects into ctx ───────────────────────
+            # ── 6. Materialise SubTask objects into ctx ───────────────────────
             ctx.subtasks = [SubTask(**s) for s in subtask_dicts]
 
-            # ── 6. Write agent output ─────────────────────────────────────────
+            # ── 7. Write agent output ─────────────────────────────────────────
             ctx.agent_outputs[self.agent_id] = {
                 "subtasks": [s.model_dump() for s in ctx.subtasks],
                 "reasoning": reasoning,
                 "subtask_count": len(ctx.subtasks),
             }
 
-            # ── 7. Build AgentResult ──────────────────────────────────────────
-            tokens_used = len(raw.split())  # estimate; astream has no usage_metadata
             elapsed_ms = int((time.monotonic() - start) * 1000)
 
             return AgentResult(

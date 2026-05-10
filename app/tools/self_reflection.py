@@ -4,7 +4,10 @@ import json
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from app.tools.registry import ToolResult
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.tools.registry import ToolResult
 
 _PROMPT_TEMPLATE = """\
 You previously produced this output: {previous_output}
@@ -15,6 +18,7 @@ Return JSON: {{"contradictions": [{{"claim": "<str>", "conflicts_with": "<str>",
 
 
 async def self_reflect(job_id: str, agent_id: str, ctx_dict: dict) -> ToolResult:
+    from app.tools.registry import ToolResult
     agent_outputs: dict = ctx_dict.get("agent_outputs", {})
     previous_output = agent_outputs.get(agent_id)
 

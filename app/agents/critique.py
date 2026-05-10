@@ -6,7 +6,7 @@ import time
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from app.agents.base import AgentResult, BaseAgent
+from app.agents.base import AgentResult, BaseAgent, count_tokens
 from app.schemas.context import CritiqueClaim, SharedContext, ToolCallRecord
 
 log = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class CritiqueAgent(BaseAgent):
     async def run(self, ctx: SharedContext) -> AgentResult:
         start = time.monotonic()
 
-        # ── 1. Budget check ───────────────────────────────────────────────────
+        # ── 1. Budget check (pre-flight estimate) ─────────────────────────────
         if not self._check_budget(ctx, 600):
             return AgentResult(
                 agent_id=self.agent_id,
@@ -108,7 +108,7 @@ class CritiqueAgent(BaseAgent):
             if _sr.success:
                 contradictions_summary.extend(_sr.output.get("contradictions", []))
 
-        # ── 4. Single LLM call ────────────────────────────────────────────────
+        # ── 4. Build prompt ───────────────────────────────────────────────────
         formatted_outputs = "\n\n---\n".join(
             f"Agent: {aid}\nOutput: {json.dumps(out)[:1000]}"
             for aid, out in outputs_to_review.items()
@@ -118,10 +118,12 @@ class CritiqueAgent(BaseAgent):
                 "\n\n---\nSelf-reflection detected these contradictions:\n"
                 + json.dumps(contradictions_summary, indent=2)
             )
+
         try:
             from app.agents.prompt_registry import get_active_prompt
             from app.streaming import publish_event
             system = get_active_prompt("critique", _SYSTEM)
+            human_msg = f"Review these agent outputs:\n{formatted_outputs}"
             raw = ""
             await publish_event(ctx.job_id, "agent_start", {
                 "agent": self.agent_id, "ts": time.monotonic()
@@ -129,7 +131,7 @@ class CritiqueAgent(BaseAgent):
             async for chunk in self._llm.astream(
                 [
                     ("system", system),
-                    ("human", f"Review these agent outputs:\n{formatted_outputs}"),
+                    ("human", human_msg),
                 ]
             ):
                 token = chunk.content
@@ -138,12 +140,17 @@ class CritiqueAgent(BaseAgent):
                     await publish_event(ctx.job_id, "token", {
                         "agent": self.agent_id, "token": token
                     })
-            await publish_event(ctx.job_id, "agent_done", {
-                "agent": self.agent_id, "tokens": len(raw)
-            })
             raw = raw.strip()
 
-            # ── 4. Parse JSON (strip markdown fences if present) ──────────────
+            # ── 5. Actual token count (tiktoken) ──────────────────────────────
+            tokens_used = count_tokens(system + human_msg + raw)
+            self._update_budget_actual(ctx, tokens_used)
+
+            await publish_event(ctx.job_id, "agent_done", {
+                "agent": self.agent_id, "tokens": tokens_used
+            })
+
+            # ── 6. Parse JSON (strip markdown fences if present) ──────────────
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
@@ -169,14 +176,14 @@ class CritiqueAgent(BaseAgent):
                 error=str(exc),
             )
 
-        # ── 5. Convert to CritiqueClaim objects and append to ctx ─────────────
+        # ── 7. Convert to CritiqueClaim objects and append to ctx ─────────────
         for claim_dict in data.get("claims", []):
             try:
                 ctx.critique_claims.append(CritiqueClaim(**claim_dict))
             except Exception:
                 log.warning("critique: skipping malformed claim: %s", claim_dict)
 
-        # ── 6. Store in ctx.agent_outputs ─────────────────────────────────────
+        # ── 8. Store in ctx.agent_outputs ─────────────────────────────────────
         ctx.agent_outputs[self.agent_id] = {
             "claims_reviewed": len(ctx.critique_claims),
             "disagreement_count": sum(
@@ -185,9 +192,6 @@ class CritiqueAgent(BaseAgent):
             "overall_agreement_rate": data.get("overall_agreement_rate", 1.0),
             "agents_reviewed": list(outputs_to_review.keys()),
         }
-
-        # ── 7. Return result ──────────────────────────────────────────────────
-        tokens_used = len(raw.split())  # estimate; astream has no usage_metadata
 
         return AgentResult(
             agent_id=self.agent_id,

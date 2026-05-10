@@ -103,9 +103,8 @@ async def stream_job(
         )
 
     async def event_generator():
-        # If job already done, emit final_answer and close immediately
+        # If job already done, replay from DB and close
         if job.status == "done":
-            # Read final answer from agent_logs (synthesis output payload)
             import json as _json
             from sqlalchemy import text
             log_result = await db.execute(
@@ -169,7 +168,6 @@ async def get_trace(
             },
         )
 
-    # Read final_answer from synthesis agent_log output
     import json as _json
     from sqlalchemy import text as _text
     fa_result = await db.execute(
@@ -193,7 +191,6 @@ async def get_trace(
             or ""
         )
 
-    # Fallback: check all agent output logs if synthesis had no answer
     if not final_answer:
         for agent_id in ("synthesis", "rag"):
             fb_result = await db.execute(
@@ -234,7 +231,6 @@ async def get_trace(
         )
     ).scalars().all()
 
-    # Extract provenance_map from RAG agent output log
     provenance_map: list[dict] = []
     for _log in agent_logs:
         if _log.agent_id == "rag" and _log.event_type == "output":
@@ -291,9 +287,9 @@ async def get_latest_eval(db: AsyncSession = Depends(get_db)) -> dict:
     if not run:
         raise HTTPException(status_code=404, detail="No eval runs found")
 
-    # Per-case data lives in summary["by_category"][cat]["cases"].
-    # Query/answer are in summary["reproducibility_snapshots"][case_id].
     raw_summary: dict = run.summary or {}
+    # Strip reproducibility_snapshots — large blobs, not needed in the API response.
+    # They remain stored in the DB for full reproducibility; use /jobs/{id}/trace to inspect.
     snapshots: dict = raw_summary.get("reproducibility_snapshots", {})
 
     cases = []
@@ -313,7 +309,6 @@ async def get_latest_eval(db: AsyncSession = Depends(get_db)) -> dict:
                 "answer_snippet": (snap.get("final_answer") or "")[:150],
             })
 
-    # Recompute aggregates from the flat case list
     by_category: dict = {}
     for cat in ("baseline", "ambiguous", "adversarial"):
         cat_cases = [c for c in cases if c["category"] == cat]
@@ -345,6 +340,9 @@ async def get_latest_eval(db: AsyncSession = Depends(get_db)) -> dict:
             "worst_case_score": raw_summary.get("worst_case_score"),
         },
         "cases": cases,
+        # Note: full reproducibility_snapshots (ctx dumps per case) are stored in
+        # the eval_runs.summary DB column and NOT returned here to keep the
+        # response size manageable. Use the DB directly to diff across runs.
     }
 
 
@@ -404,9 +402,13 @@ async def review_prompt(
 
         if eval_run is not None:
             _eval_run_id  = str(eval_run.id)
-            _eval_summary = eval_run.summary  # dict from JSON column
+            _eval_summary = eval_run.summary
 
-            # Fire-and-forget: call meta-agent and persist the new rewrite proposal
+            # Fire-and-forget: propose the *next* prompt rewrite for human review.
+            # NOTE: does NOT auto-trigger a re-eval — use POST /eval/rerun for that.
+            # Separating proposal from execution keeps the audit trail clean and
+            # prevents the double-trigger bug where approval caused both a new
+            # proposal and an immediate re-eval in the same request.
             async def _spawn_meta_rewrite() -> None:
                 from app.agents.meta_agent import run_meta_agent
                 try:
@@ -425,11 +427,9 @@ async def review_prompt(
                         session.add(new_rewrite)
                         await session.commit()
                 except Exception:
-                    pass  # non-fatal: meta-agent failure should not break the response
+                    pass  # non-fatal
 
             asyncio.create_task(_spawn_meta_rewrite())
-
-        # Enqueue targeted re-eval via Celery
-        rerun_eval.delay(rewrite_id)
+            # Re-eval must be triggered explicitly via POST /eval/rerun
 
     return {"rewrite_id": rewrite_id, "status": rewrite.status}

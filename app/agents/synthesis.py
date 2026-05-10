@@ -6,7 +6,7 @@ import time
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from app.agents.base import AgentResult, BaseAgent
+from app.agents.base import AgentResult, BaseAgent, count_tokens
 from app.schemas.context import ProvenanceEntry, SharedContext
 
 log = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ class SynthesisAgent(BaseAgent):
     async def run(self, ctx: SharedContext) -> AgentResult:
         start = time.monotonic()
 
-        # ── 1. Budget check ───────────────────────────────────────────────────
+        # ── 1. Budget check (pre-flight estimate) ─────────────────────────────
         if not self._check_budget(ctx, 700):
             return AgentResult(
                 agent_id=self.agent_id,
@@ -73,33 +73,32 @@ class SynthesisAgent(BaseAgent):
             )
 
         # ── 2. Collect inputs ─────────────────────────────────────────────────
-        rag_output   = ctx.agent_outputs.get("rag", {})
+        rag_output    = ctx.agent_outputs.get("rag", {})
         decomp_output = ctx.agent_outputs.get("decomposition", {})
         disagreements = [c for c in ctx.critique_claims if c.disagreement]
         agreements    = [c for c in ctx.critique_claims if not c.disagreement]
 
         # ── 3. Contradiction summary ──────────────────────────────────────────
-        if disagreements:
-            contradiction_block = "\n".join(
+        contradiction_block = (
+            "\n".join(
                 f"- FLAGGED: '{c.claim_text}' (from {c.source_agent}): {c.justification}"
                 for c in disagreements
             )
-        else:
-            contradiction_block = "No contradictions flagged."
+            if disagreements else "No contradictions flagged."
+        )
 
         # ── 4. Build user message ─────────────────────────────────────────────
-        rag_answer   = rag_output.get("answer", "")
-        rag_citations = rag_output.get("citations", [])
-        decomp_reasoning = decomp_output.get("reasoning", "")
-        subtasks     = decomp_output.get("subtasks", [])
+        rag_answer        = rag_output.get("answer", "")
+        rag_citations     = rag_output.get("citations", [])
+        decomp_reasoning  = decomp_output.get("reasoning", "")
+        subtasks          = decomp_output.get("subtasks", [])
 
         agreed_block = (
             "\n".join(
                 f"- SUPPORTED: '{c.claim_text}' (from {c.source_agent})"
                 for c in agreements
             )
-            if agreements
-            else "No explicitly supported claims."
+            if agreements else "No explicitly supported claims."
         )
 
         citations_block = "\n".join(
@@ -137,10 +136,15 @@ class SynthesisAgent(BaseAgent):
                     await publish_event(ctx.job_id, "token", {
                         "agent": self.agent_id, "token": token
                     })
-            await publish_event(ctx.job_id, "agent_done", {
-                "agent": self.agent_id, "tokens": len(raw)
-            })
             raw = raw.strip()
+
+            # ── Actual token count (tiktoken) ─────────────────────────────────
+            tokens_used = count_tokens(system + user_msg + raw)
+            self._update_budget_actual(ctx, tokens_used)
+
+            await publish_event(ctx.job_id, "agent_done", {
+                "agent": self.agent_id, "tokens": tokens_used
+            })
 
             # Strip markdown fences if present
             if raw.startswith("```"):
@@ -172,7 +176,6 @@ class SynthesisAgent(BaseAgent):
         ctx.final_answer = data.get("final_answer", "")
 
         # ── 6. Rebuild provenance map from synthesis output ───────────────────
-        # Replace any RAG-level entries with the richer synthesis provenance
         ctx.provenance_map.clear()
         for entry in data.get("provenance", []):
             try:
@@ -197,9 +200,6 @@ class SynthesisAgent(BaseAgent):
                 aid for aid in ctx.agent_outputs if aid != "synthesis"
             ],
         }
-
-        # ── 8. Return result ──────────────────────────────────────────────────
-        tokens_used = len(raw.split())  # estimate; astream has no usage_metadata
 
         return AgentResult(
             agent_id=self.agent_id,
