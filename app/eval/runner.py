@@ -27,6 +27,16 @@ class DimensionScore:
     score: float           # 0.0 to 1.0
     justification: str
 
+    # Allow baseline.py to use the return value directly as a number
+    def __float__(self) -> float:
+        return self.score
+
+    def __ge__(self, other: float) -> bool:
+        return self.score >= float(other)
+
+    def __round__(self, ndigits: int | None = None) -> float:
+        return round(self.score, ndigits)
+
 
 @dataclass
 class EvalCaseResult:
@@ -42,10 +52,25 @@ class EvalCaseResult:
 
 # ── Scoring functions ─────────────────────────────────────────────────────────
 
-def score_answer_correctness(answer: str, case: dict) -> DimensionScore:
-    category = case.get("category", "baseline")
-    expected_keywords: list[str] = case.get("expected_answer_keywords", [])
-    no_keywords: list[str] = case.get("expected_no_keywords", [])
+def score_answer_correctness(
+    answer: str,
+    case: dict | None = None,
+    *,
+    expected_keywords: list[str] | None = None,
+    expected_no_keywords: list[str] | None = None,
+    category: str | None = None,
+) -> DimensionScore:
+    # Support both calling conventions:
+    #   runner.py:   score_answer_correctness(answer, case)
+    #   baseline.py: score_answer_correctness(answer=..., expected_keywords=..., ...)
+    if case is not None:
+        category = case.get("category", "baseline")
+        expected_keywords = case.get("expected_answer_keywords", [])
+        no_keywords: list[str] = case.get("expected_no_keywords", [])
+    else:
+        category = category or "baseline"
+        expected_keywords = expected_keywords or []
+        no_keywords = expected_no_keywords or []
 
     answer_lower = answer.lower()
 
@@ -184,15 +209,18 @@ async def run_eval(case_ids: list[str] | None = None) -> dict:
 
         # Insert job row so agent_logs FK constraint is satisfied
         try:
-            _conn = _psycopg2.connect(settings.database_url_sync)
-            _cur = _conn.cursor()
-            _cur.execute(
-                "INSERT INTO jobs (id, query, status) VALUES (%s::uuid, %s, %s) ON CONFLICT DO NOTHING",
-                (job_id, case["query"], "running")
-            )
-            _conn.commit()
-            _cur.close()
-            _conn.close()
+            from app.db.sync_pool import get_conn, put_conn
+            _conn = get_conn()
+            try:
+                _cur = _conn.cursor()
+                _cur.execute(
+                    "INSERT INTO jobs (id, query, status) VALUES (%s::uuid, %s, %s) ON CONFLICT DO NOTHING",
+                    (job_id, case["query"], "running")
+                )
+                _conn.commit()
+                _cur.close()
+            finally:
+                put_conn(_conn)
         except Exception:
             pass
 

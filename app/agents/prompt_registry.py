@@ -3,9 +3,7 @@ from __future__ import annotations
 import logging
 import time
 
-import psycopg2
-
-from app.config import settings
+from app.db.sync_pool import get_conn, put_conn
 
 log = logging.getLogger(__name__)
 
@@ -28,22 +26,24 @@ def get_active_prompt(agent_id: str, fallback: str) -> str:
 
     # Cache miss — query DB
     try:
-        conn = psycopg2.connect(settings.database_url_sync)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT proposed_prompt
-            FROM prompt_rewrites
-            WHERE agent_id = %s
-              AND status = 'approved'
-            ORDER BY approved_at DESC
-            LIMIT 1
-            """,
-            (agent_id,),
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT proposed_prompt
+                FROM prompt_rewrites
+                WHERE agent_id = %s
+                  AND status = 'approved'
+                ORDER BY approved_at DESC
+                LIMIT 1
+                """,
+                (agent_id,),
+            )
+            row = cur.fetchone()
+            cur.close()
+        finally:
+            put_conn(conn)
         if row and row[0]:
             log.info("prompt_registry: loaded approved prompt for %s", agent_id)
             _prompt_cache[agent_id] = (row[0], time.monotonic() + _CACHE_TTL)

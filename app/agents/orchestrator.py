@@ -86,30 +86,33 @@ def _write_agent_log_sync(
         job_uuid_str = str(uuid.uuid5(uuid.NAMESPACE_DNS, job_id))
 
     try:
-        conn = psycopg2.connect(settings.database_url_sync)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO agent_logs
-              (id, job_id, agent_id, event_type,
-               input_hash, output_hash, latency_ms,
-               token_count, payload, policy_violation)
-            VALUES (%s,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                str(uuid.uuid4()), job_uuid_str, agent_id, event_type,
-                _hash(input_payload), _hash(output_payload),
-                latency_ms, token_count,
-                json.dumps(
-                    {"input": input_payload, "output": output_payload},
-                    default=str,
+        from app.db.sync_pool import get_conn, put_conn
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO agent_logs
+                  (id, job_id, agent_id, event_type,
+                   input_hash, output_hash, latency_ms,
+                   token_count, payload, policy_violation)
+                VALUES (%s,%s::uuid,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    str(uuid.uuid4()), job_uuid_str, agent_id, event_type,
+                    _hash(input_payload), _hash(output_payload),
+                    latency_ms, token_count,
+                    json.dumps(
+                        {"input": input_payload, "output": output_payload},
+                        default=str,
+                    ),
+                    policy_violation,
                 ),
-                policy_violation,
-            ),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+            )
+            conn.commit()
+            cur.close()
+        finally:
+            put_conn(conn)
     except Exception as exc:  # noqa: BLE001
         # Non-fatal — logging failure must never abort the pipeline
         log.warning("agent_log write failed: %s", exc)
