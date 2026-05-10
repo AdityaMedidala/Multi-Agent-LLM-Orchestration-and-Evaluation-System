@@ -182,7 +182,7 @@ Source: `app/eval/baseline.py`.
 
 ## Self-improving loop
 
-The meta-agent runs after each eval. It reads failed cases, clusters them by (failing_dimension × dominant_agent), and for the top-3 clusters drafts a candidate prompt rewrite. Each rewrite is stored as a structured diff (`prompt_id`, `before`, `after`, `rationale`, `evidence_case_ids`) and surfaced through `POST /prompts/{rewrite_id}/review`. On approval the new prompt becomes active and the next eval run uses it; on rejection the diff is archived with the reviewer's comment.
+The meta-agent runs after each eval. It reads failed cases, identifies the worst-performing (agent, dimension) pair, and proposes one candidate prompt rewrite. Each rewrite is stored with fields (`id`, `original_prompt`, `proposed_prompt`, `diff_justification`) and surfaced through `POST /prompts/{rewrite_id}/review`. On approval the new prompt hot-loads into agents via the prompt registry; on rejection the proposal is archived.
 
 **What it does not do:**
 
