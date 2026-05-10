@@ -38,7 +38,9 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    volumes: [".:/app"]
+    volumes: 
+      - ".:/app"
+      - "/app/.venv"
     working_dir: /app
 
   worker:
@@ -52,7 +54,9 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    volumes: [".:/app"]
+    volumes: 
+      - ".:/app"
+      - "/app/.venv"
     working_dir: /app
 
   adminer:
