@@ -527,3 +527,10 @@ eval/runner.py uses the same deferred pattern for consistency.
 returns a live connection). Two back-to-back jobs (binary search, TCP
 handshake) both completed end-to-end with the new pool — no connection
 leaks, no FK errors.
+
+### Block 41 — Final Pytest Suite and Codespace Stabilization
+**Tool:** Antigravity (Google DeepMind AI)
+**What was asked:** Generate a comprehensive 90+ test suite and harden the infrastructure for GitHub Codespaces. Ensure exact sync between local filesystem and remote repo, verify .gitignore excludes scratch folders.
+**What was kept:** Added 91 unit tests across 6 files (test_schemas, test_scoring, test_base_agent, test_tools, test_streaming, test_eval_cases) ensuring mathematical precision on the eval constraints and robust AST checking for the code_executor. 
+**What was caught:** (1) The host Mac OS's `.venv` directory was being mounted over the Docker container's Linux `.venv` via `.:/app` in docker-compose. Fixed by adding an anonymous volume `/app/.venv`. (2) The smoke test script used the GNU `timeout` command which isn't native to Mac. Swapped to `curl -m 120`. (3) In Codespaces, `CREATE EXTENSION IF NOT EXISTS vector;` must be run explicitly inside the Alembic migration script before table creation to prevent `type "vector" does not exist` on a fresh boot.
+**Verified:** `docker compose up -d` brings up the stack perfectly in a pristine Codespace, `curl POST` starts the pipeline, `uv run pytest` reports 91/91 passed. Repository is fully clean.
