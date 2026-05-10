@@ -275,6 +275,8 @@ to avoid ANTHROPIC_API_KEY requirement at import time.
 
 ---
 
+## Session 2 — May 9, 2026
+
 ### Block 20 — Troubleshooting: port conflicts + Docker networking
 **Tool:** Claude Sonnet 4.6 (claude.ai)
 **What happened:** Three sequential environment issues:
@@ -527,6 +529,8 @@ eval/runner.py uses the same deferred pattern for consistency.
 returns a live connection). Two back-to-back jobs (binary search, TCP
 handshake) both completed end-to-end with the new pool — no connection
 leaks, no FK errors.
+
+## Session 3 — May 10, 2026 (Night Session)
 
 ### Block 41 — Final Pytest Suite and Codespace Stabilization
 **Tool:** Antigravity (Google DeepMind AI)
