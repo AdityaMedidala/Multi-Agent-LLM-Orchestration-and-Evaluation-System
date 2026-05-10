@@ -8,10 +8,9 @@ import logging
 import time
 import uuid
 
-import psycopg2
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from app.agents.base import AgentResult, BaseAgent
+from app.agents.base import AgentResult, BaseAgent, count_tokens
 from app.agents.critique import CritiqueAgent
 from app.agents.decomposition import DecompositionAgent
 from app.agents.rag import RAGAgent
@@ -38,9 +37,13 @@ Available tools (included in the routing plan exactly like agents):
   counting, listing, or aggregation language such as "how many", "list all",
   "count", "which jobs", "what runs", "show records", or any request for
   statistics or records from the system database
+- code_executor: runs a Python snippet in a sandboxed subprocess and returns
+  stdout, stderr, and exit code; use this when the query requires a calculation,
+  numerical conversion, algorithm demonstration, or any task best answered by
+  executing code rather than generating prose
 
-Tool steps execute before agent steps. Place data_lookup early in the plan
-whenever the query clearly requests database statistics or record listings.
+Tool steps execute before agent steps. Place data_lookup or code_executor early
+in the plan whenever the query clearly requests computation or database lookups.
 
 Return ONLY valid JSON in this exact shape — no prose, no markdown:
 {
@@ -77,9 +80,6 @@ def _write_agent_log_sync(
             json.dumps(d, sort_keys=True, default=str).encode()
         ).hexdigest()[:16]
 
-    # Normalise job_id: the column is UUID — convert non-UUID strings
-    # (e.g. "log-test-1") to a deterministic UUID so the INSERT never
-    # fails on a cast error.  In production job_id is always a real UUID.
     try:
         job_uuid_str = str(uuid.UUID(job_id))
     except ValueError:
@@ -113,8 +113,7 @@ def _write_agent_log_sync(
             cur.close()
         finally:
             put_conn(conn)
-    except Exception as exc:  # noqa: BLE001
-        # Non-fatal — logging failure must never abort the pipeline
+    except Exception as exc:
         log.warning("agent_log write failed: %s", exc)
 
 
@@ -151,8 +150,9 @@ class OrchestratorAgent(BaseAgent):
     async def run(self, ctx: SharedContext) -> AgentResult:
         start = time.monotonic()
 
-        # ── 1. Ask the LLM for a routing plan ────────────────────────────────
         from app.streaming import publish_event
+
+        # ── 1. Ask the LLM for a routing plan ────────────────────────────────
         messages = [
             ("system", _ROUTING_SYSTEM),
             ("human", _ROUTING_USER.format(query=ctx.original_query)),
@@ -166,26 +166,36 @@ class OrchestratorAgent(BaseAgent):
         })
         ctx.log_routing(f"orchestrator_reasoning: {overall_reasoning}")
 
-        # ── 2a. Execute data_lookup tool steps before agent steps ─────────────
+        # ── 2a. Execute tool steps before agent steps ─────────────────────────
         from app.tools.registry import call_tool
         from app.schemas.context import ToolCallRecord
         from app.agents.tool_persistence import _persist_tool_call
-        tool_steps = [s for s in routing_plan if s["agent"] == "data_lookup"]
-        routing_plan = [s for s in routing_plan if s["agent"] != "data_lookup"]
+        _plannable_tools = {"data_lookup", "code_executor"}
+        tool_steps = [s for s in routing_plan if s["agent"] in _plannable_tools]
+        routing_plan = [s for s in routing_plan if s["agent"] not in _plannable_tools]
         for tool_step in tool_steps:
+            tool_name = tool_step["agent"]
             reason = tool_step.get("reason", "")
-            ctx.log_routing(f"invoking tool 'data_lookup': {reason}")
+            ctx.log_routing(f"invoking tool '{tool_name}': {reason}")
             t0 = time.monotonic()
-            tool_result = await call_tool(
-                "data_lookup",
-                {"natural_language_query": ctx.original_query},
-            )
+
+            # Build tool-specific kwargs
+            if tool_name == "data_lookup":
+                tool_kwargs = {"natural_language_query": ctx.original_query}
+            elif tool_name == "code_executor":
+                # Extract code from the query or generate a snippet via LLM
+                code_snippet = await self._generate_code_snippet(ctx.original_query)
+                tool_kwargs = {"code": code_snippet}
+            else:
+                tool_kwargs = {}
+
+            tool_result = await call_tool(tool_name, tool_kwargs)
             latency = int((time.monotonic() - t0) * 1000)
             ctx.tool_call_log.append(
                 ToolCallRecord(
-                    tool_name="data_lookup",
+                    tool_name=tool_name,
                     attempt=1,
-                    input={"natural_language_query": ctx.original_query},
+                    input=tool_kwargs,
                     output=tool_result.output,
                     latency_ms=latency,
                     accepted=tool_result.success,
@@ -194,27 +204,31 @@ class OrchestratorAgent(BaseAgent):
             )
             await _persist_tool_call(
                 job_id=ctx.job_id,
-                tool_name="data_lookup",
+                tool_name=tool_name,
                 agent_id="orchestrator",
                 attempt=1,
-                input_payload={"natural_language_query": ctx.original_query},
+                input_payload=tool_kwargs,
                 output_payload=tool_result.output,
                 latency_ms=latency,
                 accepted=tool_result.success,
                 failure_reason=tool_result.failure_reason,
             )
             if tool_result.success:
-                ctx.metadata["data_lookup_results"] = tool_result.output
-                ctx.log_routing(
-                    f"data_lookup returned {tool_result.output.get('row_count', 0)} rows"
-                )
+                ctx.metadata[f"{tool_name}_results"] = tool_result.output
+                if tool_name == "data_lookup":
+                    ctx.log_routing(
+                        f"data_lookup returned {tool_result.output.get('row_count', 0)} rows"
+                    )
+                else:
+                    stdout = tool_result.output.get("stdout", "")[:200]
+                    ctx.log_routing(f"code_executor returned: {stdout}")
             else:
-                ctx.log_routing(f"data_lookup failed: {tool_result.failure_reason}")
+                ctx.log_routing(f"{tool_name} failed: {tool_result.failure_reason}")
             await _log_agent_event(
                 job_id=ctx.job_id,
-                agent_id="data_lookup",
+                agent_id=tool_name,
                 event_type="tool_result",
-                input_payload={"natural_language_query": ctx.original_query},
+                input_payload=tool_kwargs,
                 output_payload=tool_result.output,
                 latency_ms=latency,
                 token_count=0,
@@ -231,10 +245,7 @@ class OrchestratorAgent(BaseAgent):
             token_count=0,
         )
 
-        # ── 2. Execute agents in the decided order ────────────────────────────
-        # Use a while loop with an explicit index so that after decomposition
-        # populates ctx.subtasks we can splice a re-ordered tail into plan_queue
-        # before the remaining steps execute.
+        # ── 3. Execute agents in the decided order ────────────────────────────
         results: list[AgentResult] = []
         agent_type_map = {
             "rag": "retrieve",
@@ -242,8 +253,6 @@ class OrchestratorAgent(BaseAgent):
             "critique": "critique",
             "decomposition": "decompose",
         }
-        # Instantiate agents fresh per job so httpx clients are bound
-        # to the current event loop (avoids stale transport after Celery fork)
         _agent_registry: dict[str, BaseAgent] = {
             "decomposition": DecompositionAgent(),
             "rag": RAGAgent(),
@@ -252,9 +261,13 @@ class OrchestratorAgent(BaseAgent):
         }
         plan_queue = list(routing_plan)
         step_idx = 0
+
+        # Lazy import so circular deps resolve at runtime
+        from app.agents.compression import compress_context_if_needed
+
         while step_idx < len(plan_queue):
             step = plan_queue[step_idx]
-            step_idx += 1  # increment first so any `continue` skips cleanly
+            step_idx += 1
 
             agent_name: str = step["agent"]
             reason: str = step.get("reason", "")
@@ -268,10 +281,20 @@ class OrchestratorAgent(BaseAgent):
                 ctx.log_routing(f"SKIPPED '{agent_name}': not in registry")
                 continue
 
-            # Initialise budget before the agent runs
-            ctx.get_budget(agent_name, budget)
+            # ── Initialise budget and publish starting budget to SSE ──────────
+            b = ctx.get_budget(agent_name, budget)
+            await publish_event(ctx.job_id, "budget_update", {
+                "agent": agent_name,
+                "budget_tokens": budget,
+                "used": 0,
+                "remaining": budget,
+                "violated": False,
+            })
 
-            # Log agent start
+            # ── Context compression before each agent if budget is tight ──────
+            await compress_context_if_needed(ctx, agent_name, budget)
+
+            # ── Log agent start ───────────────────────────────────────────────
             await _log_agent_event(
                 job_id=ctx.job_id,
                 agent_id=agent_name,
@@ -284,12 +307,11 @@ class OrchestratorAgent(BaseAgent):
 
             try:
                 result = await agent.run(ctx)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 error_msg = f"{type(exc).__name__}: {exc}"
                 ctx.metadata[f"{agent_name}_error"] = error_msg
                 ctx.log_routing(f"FAILED '{agent_name}': {error_msg}")
 
-                # Log agent exception
                 await _log_agent_event(
                     job_id=ctx.job_id,
                     agent_id=agent_name,
@@ -299,7 +321,6 @@ class OrchestratorAgent(BaseAgent):
                     latency_ms=0,
                     token_count=0,
                 )
-
                 results.append(
                     AgentResult(
                         agent_id=agent_name,
@@ -315,7 +336,22 @@ class OrchestratorAgent(BaseAgent):
             if not result.success:
                 ctx.log_routing(f"FAILED '{agent_name}': {result.error}")
 
-            # Log agent output (success or soft failure)
+            # ── Publish actual budget remaining after agent completes ─────────
+            b_after = ctx.budgets.get(agent_name)
+            if b_after:
+                await publish_event(ctx.job_id, "budget_update", {
+                    "agent": agent_name,
+                    "budget_tokens": b_after.max_tokens,
+                    "used": b_after.used_tokens,
+                    "remaining": b_after.remaining(),
+                    "violated": b_after.violated,
+                })
+
+            # ── Log agent output ──────────────────────────────────────────────
+            is_violation = ctx.budgets.get(
+                agent_name,
+                AgentBudget(agent_id=agent_name, max_tokens=0),
+            ).violated
             await _log_agent_event(
                 job_id=ctx.job_id,
                 agent_id=agent_name,
@@ -324,10 +360,7 @@ class OrchestratorAgent(BaseAgent):
                 output_payload=result.output,
                 latency_ms=result.latency_ms,
                 token_count=result.tokens_used,
-                policy_violation=ctx.budgets.get(
-                    agent_name,
-                    AgentBudget(agent_id=agent_name, max_tokens=0),
-                ).violated,
+                policy_violation=is_violation,
             )
 
             results.append(result)
@@ -341,14 +374,13 @@ class OrchestratorAgent(BaseAgent):
                         st.result = {"summary": str(result.output)[:200]}
                         break
 
-            # After decomposition populates ctx.subtasks, re-order the remaining
-            # steps in plan_queue so later agents respect dependency order.
+            # After decomposition populates ctx.subtasks, reorder remaining steps
             if agent_name == "decomposition" and ctx.subtasks:
                 remaining = plan_queue[step_idx:]
                 reordered = self._build_execution_order(ctx, remaining)
                 plan_queue = plan_queue[:step_idx] + reordered
 
-        # Ensure final_answer is always set even if all agents fail
+        # Ensure final_answer is always set even if synthesis fails
         if not ctx.final_answer and ctx.agent_outputs:
             for aid in ("synthesis", "rag", "decomposition"):
                 fa = (ctx.agent_outputs.get(aid, {}).get("final_answer")
@@ -376,16 +408,13 @@ class OrchestratorAgent(BaseAgent):
         self, ctx: SharedContext, routing_plan: list[dict]
     ) -> list[dict]:
         """
-        Reorders the routing plan to respect subtask dependencies.
-        If decomposition produced a dependency graph in ctx.subtasks,
-        use topological sort to enforce execution order.
-        Falls back to original plan if no subtasks or cycle detected.
+        Reorders the routing plan to respect subtask dependencies using
+        Kahn's topological sort. Falls back to original plan on cycle.
         """
         subtasks = ctx.subtasks
         if not subtasks:
             return routing_plan
 
-        # Build dependency map: task_id → list of task_ids it depends on
         dep_map: dict[str, list[str]] = {
             st.task_id: st.dependencies for st in subtasks
         }
@@ -393,7 +422,6 @@ class OrchestratorAgent(BaseAgent):
             st.task_id: st.task_type for st in subtasks
         }
 
-        # Topological sort (Kahn's algorithm)
         from collections import deque
         in_degree = {tid: 0 for tid in dep_map}
         dependents: dict[str, list[str]] = {tid: [] for tid in dep_map}
@@ -414,11 +442,9 @@ class OrchestratorAgent(BaseAgent):
                     queue.append(dependent)
 
         if len(ordered_task_ids) != len(dep_map):
-            # Cycle detected — fall back to original plan
             log.warning("Cycle in subtask dependency graph, using original plan")
             return routing_plan
 
-        # Map task_type to agent_name
         type_to_agent = {
             "retrieve": "rag",
             "synthesize": "synthesis",
@@ -426,14 +452,12 @@ class OrchestratorAgent(BaseAgent):
             "decompose": "decomposition",
         }
 
-        # Build reordered plan based on dependency-sorted task types
         reordered: list[dict] = []
         seen_agents: set[str] = set()
         for tid in ordered_task_ids:
             task_type = task_types.get(tid, "")
             agent_name = type_to_agent.get(task_type)
             if agent_name and agent_name not in seen_agents:
-                # Find matching step in original routing_plan
                 matching = next(
                     (s for s in routing_plan if s["agent"] == agent_name),
                     None,
@@ -442,7 +466,6 @@ class OrchestratorAgent(BaseAgent):
                     reordered.append(matching)
                     seen_agents.add(agent_name)
 
-        # Add any routing_plan steps not covered by subtasks
         for step in routing_plan:
             if step["agent"] not in seen_agents:
                 reordered.append(step)
@@ -464,15 +487,12 @@ class OrchestratorAgent(BaseAgent):
         try:
             from app.agents.prompt_registry import get_active_prompt
             system = get_active_prompt("orchestrator", _ROUTING_SYSTEM)
-            # Rebuild messages with potentially rewritten system prompt
             messages = [
                 (role, system if role == "system" else content)
                 for role, content in messages
             ]
             response = await self._llm.ainvoke(messages)
-            raw = response.content
-            # Strip accidental markdown fences
-            raw = raw.strip()
+            raw = response.content.strip()
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):
@@ -481,8 +501,7 @@ class OrchestratorAgent(BaseAgent):
             plan = data.get("routing_plan", [])
             reasoning = data.get("orchestrator_reasoning", "")
             return plan, reasoning
-        except Exception as exc:  # noqa: BLE001
-            # Safe fallback: run all agents in default order
+        except Exception as exc:
             fallback_plan = [
                 {"agent": "decomposition", "reason": "fallback", "budget_tokens": 6000},
                 {"agent": "rag",           "reason": "fallback", "budget_tokens": 6000},
@@ -490,3 +509,28 @@ class OrchestratorAgent(BaseAgent):
                 {"agent": "synthesis",     "reason": "fallback", "budget_tokens": 6000},
             ]
             return fallback_plan, f"LLM routing failed ({exc}); using default order"
+
+    async def _generate_code_snippet(self, query: str) -> str:
+        """Use the LLM to generate a safe Python snippet from a natural language query."""
+        try:
+            response = await self._llm.ainvoke([
+                ("system",
+                 "You are a Python code generator. Given a user query, write a short "
+                 "Python snippet that computes the answer and prints it to stdout.\n"
+                 "Rules:\n"
+                 "- Use only the standard library (math, statistics, datetime, etc.)\n"
+                 "- Do NOT import os, sys, subprocess, socket, or any network/file module\n"
+                 "- Print the result clearly\n"
+                 "- Return ONLY the Python code, no markdown fences, no explanation"),
+                ("human", query),
+            ])
+            code = response.content.strip()
+            if code.startswith("```"):
+                code = code.split("```")[1]
+                if code.startswith("python"):
+                    code = code[6:]
+                code = code.strip()
+            return code
+        except Exception as exc:
+            log.warning("code snippet generation failed: %s", exc)
+            return "print('Code generation failed')"
