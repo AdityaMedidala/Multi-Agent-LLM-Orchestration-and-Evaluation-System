@@ -504,3 +504,26 @@ main.py.
 **Verified:** Two back-to-back jobs both complete (event loop fix).
 Distinct chunks ['c6','c1'] in provenance (attribution fix). Eval
 unchanged at 13/15.
+
+### Block 40 — Sync DB connection pool
+**Tool:** Claude Sonnet 4.6 (Claude Code)
+**What was asked:** Replace per-call psycopg2.connect() with a shared
+ThreadedConnectionPool across 4 sync write sites (tool_persistence,
+orchestrator agent_log, prompt_registry, eval/runner) to eliminate
+the 8–12 TCP connection setups per pipeline job.
+**What was kept:** ThreadedConnectionPool(minconn=2, maxconn=10) with
+lazy init on first get_pool() call. get_conn/put_conn wrappers shielding
+callers from pool internals. put_conn swallows putconn exceptions so a
+pool error never propagates into the write path. try/finally on every
+call site so connections return to the pool on exception paths too.
+**What was changed:** Nothing structural — same SQL, same logic, only
+the connection acquisition pattern changed.
+**What was caught:** orchestrator.py uses a deferred
+`from app.db.sync_pool import ...` inside the function body to avoid
+adding a module-level import to a file already sensitive to import
+order (same pattern as the existing run_meta_agent deferred import).
+eval/runner.py uses the same deferred pattern for consistency.
+**Verified:** Pool initializes cleanly (ThreadedConnectionPool, get_conn
+returns a live connection). Two back-to-back jobs (binary search, TCP
+handshake) both completed end-to-end with the new pool — no connection
+leaks, no FK errors.
